@@ -1,14 +1,14 @@
 #![no_std]
 
 // Declare modules
-mod storage;
-mod math;
 mod error;
+mod events;
+mod math;
+mod storage;
 mod validation;
 
-use soroban_sdk::{
-    contract, contractimpl, vec, Address, Env, String, Vec,
-};
+use crate::events::*;
+use soroban_sdk::{contract, contractimpl, vec, Address, Env, String, Vec};
 
 // Re-export commonly used types from storage module
 pub use storage::{Config, EscrowData, EscrowStatus};
@@ -71,7 +71,9 @@ impl EscrowContract {
 
         // ID sequencial
         let counter = storage::read_counter(&env);
-        let escrow_id = counter + 1;
+        let escrow_id = counter
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("Counter overflow"));
 
         // Calcular taxa usando o fee_bps recebido como parâmetro (do backend)
         let cfg = storage::read_config(&env);
@@ -95,7 +97,7 @@ impl EscrowContract {
             created_at: now,
             release_at: release_time,
             status: EscrowStatus::Active,
-            product_id,
+            product_id: product_id.clone(),
             guarantee_days,
 
             fee_bps, // usa o fee_bps recebido como parâmetro
@@ -103,6 +105,19 @@ impl EscrowContract {
 
         storage::write_escrow(&env, escrow_id, &escrow);
         storage::write_counter(&env, escrow_id);
+
+        // Emit event: escrow created
+        CreateEscrowEvent {
+            escrow_id,
+            buyer: buyer.clone(),
+            seller: seller.clone(),
+            amount,
+            asset: asset.clone(),
+            fee_bps,
+            guarantee_days,
+            product_id,
+        }
+        .publish(&env);
 
         escrow_id
     }
@@ -116,8 +131,7 @@ impl EscrowContract {
         let mut esc = storage::read_escrow(&env, escrow_id);
 
         // Check escrow status
-        let status = esc.status.clone();
-        validation::validate_escrow_active(status);
+        validation::validate_escrow_active(esc.status.clone());
 
         let now = env.ledger().timestamp();
         let is_expired = math::is_expired(now, esc.release_at);
@@ -134,13 +148,15 @@ impl EscrowContract {
         let cfg = storage::read_config(&env);
         let mut to_seller = esc.amount;
 
+        // Calculate fee for event emission
+        let fee = math::calc_fee(esc.amount, esc.fee_bps);
+
         if !cfg.collect_on_create {
-            let fee = math::calc_fee(esc.amount, esc.fee_bps);
             if fee > 0 {
                 validation::validate_fee_not_exceeds_amount(esc.amount, fee);
                 // taxa do contrato para o admin
                 token.transfer(&env.current_contract_address(), &cfg.admin, &fee);
-                to_seller = esc.amount - fee;
+                to_seller = esc.amount.checked_sub(fee).expect("Fee exceeds amount");
             }
         }
 
@@ -153,6 +169,16 @@ impl EscrowContract {
 
         esc.status = EscrowStatus::Released;
         storage::write_escrow(&env, escrow_id, &esc);
+
+        // Emit event: payment released
+        ReleasePaymentEvent {
+            escrow_id,
+            seller: esc.seller.clone(),
+            amount: esc.amount,
+            fee,
+            to_seller,
+        }
+        .publish(&env);
     }
 
     /// Reembolso (apenas buyer e dentro do período de garantia)
@@ -163,8 +189,7 @@ impl EscrowContract {
         esc.buyer.require_auth();
 
         // Check escrow status
-        let status = esc.status.clone();
-        validation::validate_escrow_active(status);
+        validation::validate_escrow_active(esc.status.clone());
 
         // Validate refund window
         validation::validate_refund_window(&esc, &env);
@@ -175,6 +200,15 @@ impl EscrowContract {
 
         esc.status = EscrowStatus::Refunded;
         storage::write_escrow(&env, escrow_id, &esc);
+
+        // Emit event: refund requested
+        RequestRefundEvent {
+            escrow_id,
+            buyer: esc.buyer.clone(),
+            amount: esc.amount,
+            asset: esc.asset.clone(),
+        }
+        .publish(&env);
     }
 
     /// Lista todos os escrows de um seller
@@ -198,8 +232,7 @@ impl EscrowContract {
         let mut esc = storage::read_escrow(&env, escrow_id);
 
         // Check escrow status
-        let status = esc.status.clone();
-        validation::validate_escrow_active(status);
+        validation::validate_escrow_active(esc.status.clone());
 
         // Authorization: require auth from buyer or seller based on parameter
         if as_buyer {
@@ -210,6 +243,21 @@ impl EscrowContract {
 
         esc.status = EscrowStatus::Disputed;
         storage::write_escrow(&env, escrow_id, &esc);
+
+        // Determine who initiated the dispute for the event
+        let disputed_by = if as_buyer {
+            esc.buyer.clone()
+        } else {
+            esc.seller.clone()
+        };
+
+        // Emit event: escrow disputed
+        DisputeEscrowEvent {
+            escrow_id,
+            disputed_by,
+            as_buyer,
+        }
+        .publish(&env);
     }
 }
 

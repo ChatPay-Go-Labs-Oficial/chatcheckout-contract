@@ -1,5 +1,3 @@
-#![no_std]
-
 /// Calculate fee based on amount and basis points
 /// fee = amount * bps / 10000
 pub fn calc_fee(amount: i128, bps: u32) -> i128 {

@@ -1,5 +1,3 @@
-#![no_std]
-
 use soroban_sdk::contracterror;
 
 /// Custom error types for the escrow contract
