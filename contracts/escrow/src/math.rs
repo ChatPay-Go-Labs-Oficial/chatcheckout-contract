@@ -18,8 +18,3 @@ pub fn calc_release_timestamp(current: u64, days: u32) -> u64 {
 pub fn is_expired(current: u64, release_at: u64) -> bool {
     current >= release_at
 }
-
-/// Convert days to seconds (for timestamp calculations)
-pub const fn days_to_seconds(days: u32) -> u64 {
-    days as u64 * 86_400
-}

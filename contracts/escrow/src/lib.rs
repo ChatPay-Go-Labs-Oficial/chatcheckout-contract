@@ -64,7 +64,8 @@ impl EscrowContract {
         buyer.require_auth();
 
         // Input validation
-        validation::validate_create_escrow_params(amount, fee_bps, guarantee_days, &product_id);
+        validation::validate_create_escrow_params(amount, fee_bps, guarantee_days, &product_id)
+            .unwrap();
 
         let now = env.ledger().timestamp();
         let release_time = math::calc_release_timestamp(now, guarantee_days);
@@ -131,7 +132,7 @@ impl EscrowContract {
         let mut esc = storage::read_escrow(&env, escrow_id);
 
         // Check escrow status
-        validation::validate_escrow_active(esc.status.clone());
+        validation::validate_escrow_active(esc.status.clone()).unwrap();
 
         let now = env.ledger().timestamp();
         let is_expired = math::is_expired(now, esc.release_at);
@@ -153,7 +154,8 @@ impl EscrowContract {
 
         if !cfg.collect_on_create {
             if fee > 0 {
-                validation::validate_fee_not_exceeds_amount(esc.amount, fee);
+                validation::validate_fee_not_exceeds_amount(esc.amount, fee)
+                    .unwrap();
                 // taxa do contrato para o admin
                 token.transfer(&env.current_contract_address(), &cfg.admin, &fee);
                 to_seller = esc.amount.checked_sub(fee).expect("Fee exceeds amount");
@@ -189,10 +191,10 @@ impl EscrowContract {
         esc.buyer.require_auth();
 
         // Check escrow status
-        validation::validate_escrow_active(esc.status.clone());
+        validation::validate_escrow_active(esc.status.clone()).unwrap();
 
         // Validate refund window
-        validation::validate_refund_window(&esc, &env);
+        validation::validate_refund_window(&esc, &env).unwrap();
 
         // Devolve tudo que está em custódia (a taxa cobrada no create, se houver, não é reembolsada)
         let token = soroban_sdk::token::Client::new(&env, &esc.asset);
@@ -232,7 +234,7 @@ impl EscrowContract {
         let mut esc = storage::read_escrow(&env, escrow_id);
 
         // Check escrow status
-        validation::validate_escrow_active(esc.status.clone());
+        validation::validate_escrow_active(esc.status.clone()).unwrap();
 
         // Authorization: require auth from buyer or seller based on parameter
         if as_buyer {
