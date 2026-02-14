@@ -40,4 +40,16 @@ pub enum EscrowError {
 
     /// Fee amount exceeds escrow amount
     FeeExceedsAmount = 12,
+
+    /// Escrow is not in disputed status
+    EscrowNotDisputed = 13,
+
+    /// Dispute already resolved
+    DisputeAlreadyResolved = 14,
+
+    /// Both parties must agree on resolution
+    BothPartiesMustAgree = 15,
+
+    /// Cannot resolve own dispute
+    CannotResolveOwnDispute = 16,
 }

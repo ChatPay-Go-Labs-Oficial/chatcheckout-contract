@@ -71,3 +71,34 @@ impl DisputeEscrowEvent {
         env.events().publish(topics, self);
     }
 }
+
+/// Event emitted when a party proposes a resolution to the dispute
+#[contracttype]
+pub struct ProposeResolutionEvent {
+    pub escrow_id: u64,
+    pub proposed_by: Address,
+    pub favor_seller: bool, // true = favor seller (release), false = favor buyer (refund)
+}
+
+impl ProposeResolutionEvent {
+    pub fn publish(self, env: &Env) {
+        let topics = (symbol_short!("prop_res"),);
+        env.events().publish(topics, self);
+    }
+}
+
+/// Event emitted when dispute is resolved
+#[contracttype]
+pub struct ResolveDisputeEvent {
+    pub escrow_id: u64,
+    pub resolved_in_favor_of: Address, // buyer or seller address
+    pub amount: i128,
+    pub resolution_type: bool, // true = released to seller, false = refunded to buyer
+}
+
+impl ResolveDisputeEvent {
+    pub fn publish(self, env: &Env) {
+        let topics = (symbol_short!("res_disp"),);
+        env.events().publish(topics, self);
+    }
+}

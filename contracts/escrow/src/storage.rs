@@ -43,6 +43,11 @@ pub struct EscrowData {
 
     // snapshot da taxa usada na criação (vem como parâmetro do backend)
     pub fee_bps: u32,
+
+    // Dispute tracking fields (0 = not set, 1 = favor buyer, 2 = favor seller)
+    pub disputed_by_buyer: bool, // true if buyer initiated dispute
+    pub buyer_resolution: u32,  // 0 = no vote, 1 = favor buyer (refund), 2 = favor seller (release)
+    pub seller_resolution: u32,  // 0 = no vote, 1 = favor buyer (refund), 2 = favor seller (release)
 }
 
 // ============================================================================

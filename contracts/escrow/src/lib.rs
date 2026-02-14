@@ -102,6 +102,11 @@ impl EscrowContract {
             guarantee_days,
 
             fee_bps, // usa o fee_bps recebido como parâmetro
+
+            // Dispute tracking fields (initialized)
+            disputed_by_buyer: false,
+            buyer_resolution: 0u32,
+            seller_resolution: 0u32,
         };
 
         storage::write_escrow(&env, escrow_id, &escrow);
@@ -154,8 +159,7 @@ impl EscrowContract {
 
         if !cfg.collect_on_create {
             if fee > 0 {
-                validation::validate_fee_not_exceeds_amount(esc.amount, fee)
-                    .unwrap();
+                validation::validate_fee_not_exceeds_amount(esc.amount, fee).unwrap();
                 // taxa do contrato para o admin
                 token.transfer(&env.current_contract_address(), &cfg.admin, &fee);
                 to_seller = esc.amount.checked_sub(fee).expect("Fee exceeds amount");
@@ -243,15 +247,16 @@ impl EscrowContract {
             esc.seller.require_auth();
         }
 
-        esc.status = EscrowStatus::Disputed;
-        storage::write_escrow(&env, escrow_id, &esc);
-
-        // Determine who initiated the dispute for the event
+        // Track who initiated the dispute
         let disputed_by = if as_buyer {
             esc.buyer.clone()
         } else {
             esc.seller.clone()
         };
+
+        esc.disputed_by_buyer = as_buyer;
+        esc.status = EscrowStatus::Disputed;
+        storage::write_escrow(&env, escrow_id, &esc);
 
         // Emit event: escrow disputed
         DisputeEscrowEvent {
@@ -260,6 +265,142 @@ impl EscrowContract {
             as_buyer,
         }
         .publish(&env);
+    }
+
+    /// Propõe uma resolução para a disputa (buyer ou seller)
+    /// as_buyer: true se está sendo chamado pelo buyer, false se pelo seller
+    /// favor_seller: true = favor seller (liberar pagamento), false = favor buyer (reembolso)
+    pub fn prop_res(
+        env: Env,
+        escrow_id: u64,
+        as_buyer: bool,
+        favor_seller: bool,
+    ) {
+        let mut esc = storage::read_escrow(&env, escrow_id);
+
+        // Check escrow status (must be disputed)
+        validation::validate_escrow_disputed(esc.status.clone()).unwrap();
+
+        // Convert favor_seller to resolution value: 1 = favor buyer, 2 = favor seller
+        let resolution_value = if favor_seller { 2u32 } else { 1u32 };
+
+        // Authorization and record resolution
+        if as_buyer {
+            esc.buyer.require_auth();
+
+            // Check if buyer already voted
+            if esc.buyer_resolution != 0 {
+                panic!("Buyer already proposed a resolution");
+            }
+
+            esc.buyer_resolution = resolution_value;
+        } else {
+            esc.seller.require_auth();
+
+            // Check if seller already voted
+            if esc.seller_resolution != 0 {
+                panic!("Seller already proposed a resolution");
+            }
+
+            esc.seller_resolution = resolution_value;
+        }
+
+        storage::write_escrow(&env, escrow_id, &esc);
+
+        // Emit event: resolution proposed
+        let proposed_by = if as_buyer {
+            esc.buyer.clone()
+        } else {
+            esc.seller.clone()
+        };
+
+        ProposeResolutionEvent {
+            escrow_id,
+            proposed_by,
+            favor_seller,
+        }
+        .publish(&env);
+    }
+
+    /// Resolve disputa (pode ser chamado por qualquer um após ambas as partes concordarem)
+    pub fn res_disp(env: Env, escrow_id: u64) {
+        let mut esc = storage::read_escrow(&env, escrow_id);
+
+        // Check escrow status (must be disputed)
+        validation::validate_escrow_disputed(esc.status.clone()).unwrap();
+
+        // Check both parties have proposed resolutions
+        let buyer_vote = esc.buyer_resolution;
+        let seller_vote = esc.seller_resolution;
+
+        // Both must have voted (value != 0)
+        if buyer_vote == 0 || seller_vote == 0 {
+            panic!("Both parties must propose a resolution before resolving");
+        }
+
+        // Check if both agree
+        if buyer_vote != seller_vote {
+            panic!("Both parties must agree on the resolution");
+        }
+
+        // Execute resolution based on agreement
+        let token = soroban_sdk::token::Client::new(&env, &esc.asset);
+
+        if buyer_vote == 1 {
+            // Both agreed: favor buyer (refund)
+            token.transfer(
+                &env.current_contract_address(),
+                &esc.buyer,
+                &esc.amount,
+            );
+
+            esc.status = EscrowStatus::Refunded;
+
+            // Emit event: dispute resolved in favor of buyer
+            ResolveDisputeEvent {
+                escrow_id,
+                resolved_in_favor_of: esc.buyer.clone(),
+                amount: esc.amount,
+                resolution_type: false, // false = refunded to buyer
+            }
+            .publish(&env);
+        } else {
+            // Both agreed: favor seller (release payment)
+            let cfg = storage::read_config(&env);
+            let mut to_seller = esc.amount;
+
+            // Calculate and collect fee if not collected at creation
+            if !cfg.collect_on_create {
+                let fee = math::calc_fee(esc.amount, esc.fee_bps);
+                if fee > 0 {
+                    token.transfer(
+                        &env.current_contract_address(),
+                        &cfg.admin,
+                        &fee,
+                    );
+                    to_seller = esc.amount.checked_sub(fee).expect("Fee exceeds amount");
+                }
+            }
+
+            token.transfer(
+                &env.current_contract_address(),
+                &esc.seller.clone(),
+                &to_seller,
+            );
+
+            esc.status = EscrowStatus::Released;
+
+            // Emit event: dispute resolved in favor of seller
+            ResolveDisputeEvent {
+                escrow_id,
+                resolved_in_favor_of: esc.seller.clone(),
+                amount: to_seller,
+                resolution_type: true, // true = released to seller
+            }
+            .publish(&env);
+        }
+
+        storage::write_escrow(&env, escrow_id, &esc);
     }
 }
 

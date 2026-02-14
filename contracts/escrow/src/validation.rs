@@ -87,3 +87,16 @@ pub fn validate_fee_not_exceeds_amount(amount: i128, fee: i128) -> Result<(), Es
         Ok(())
     }
 }
+
+// ============================================================================
+// Dispute Validation Functions
+// ============================================================================
+
+/// Validate escrow is in disputed status
+pub fn validate_escrow_disputed(status: EscrowStatus) -> Result<(), EscrowError> {
+    if let EscrowStatus::Disputed = status {
+        Ok(())
+    } else {
+        Err(EscrowError::EscrowNotDisputed)
+    }
+}
