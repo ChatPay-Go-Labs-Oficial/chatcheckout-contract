@@ -7,6 +7,7 @@ pub enum DataKey {
     Escrow(u64),
     Counter,
     Config,
+    Nonce(Address),
 }
 
 /// Status of an escrow
@@ -99,4 +100,31 @@ pub fn read_counter(env: &Env) -> u64 {
 
 pub fn write_counter(env: &Env, value: u64) {
     env.storage().instance().set(&DataKey::Counter, &value);
+}
+
+// ============================================================================
+// Nonce Storage Access (for meta-transactions)
+// ============================================================================
+
+/// Read the current nonce for a user (for replay protection in meta-transactions)
+pub fn read_nonce(env: &Env, user: &Address) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::Nonce(user.clone()))
+        .unwrap_or(0u64)
+}
+
+/// Write the nonce for a user
+pub fn write_nonce(env: &Env, user: &Address, nonce: u64) {
+    env.storage().instance().set(&DataKey::Nonce(user.clone()), &nonce);
+}
+
+/// Increment and return the previous nonce for a user
+pub fn increment_nonce(env: &Env, user: &Address) -> u64 {
+    let current = read_nonce(env, user);
+    let next = current
+        .checked_add(1)
+        .unwrap_or_else(|| panic!("Nonce overflow"));
+    write_nonce(env, user, next);
+    current
 }

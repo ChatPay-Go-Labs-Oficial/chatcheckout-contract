@@ -24,9 +24,10 @@ pub fn validate_fee_bps_range(fee_bps: u32) -> Result<(), EscrowError> {
     }
 }
 
-/// Validate guarantee days is within reasonable range (1-36500)
+/// Validate guarantee days is within reasonable range (0-36500)
+/// days = 0 allows immediate release (no guarantee period)
 pub fn validate_guarantee_days(days: u32) -> Result<(), EscrowError> {
-    if days == 0 || days > 36_500 {
+    if days > 36_500 {
         Err(EscrowError::InvalidGuaranteeDays)
     } else {
         Ok(())

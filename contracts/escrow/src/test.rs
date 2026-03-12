@@ -178,7 +178,7 @@ fn test_dispute_by_buyer() {
     let client = EscrowContractClient::new(&env, &contract_id);
 
     // Buyer abre disputa
-    client.dispute_escrow(&escrow_id, &true); // as_buyer = true
+    client.dispute_escrow(&escrow_id, &true, &buyer, &0); // as_buyer = true
 
     // Verificar que o escrow está marcado como disputado
     let escrow = client.get_escrow(&escrow_id);
@@ -202,7 +202,7 @@ fn test_dispute_by_seller() {
     let client = EscrowContractClient::new(&env, &contract_id);
 
     // Seller abre disputa
-    client.dispute_escrow(&escrow_id, &false); // as_buyer = false
+    client.dispute_escrow(&escrow_id, &false, &seller, &0); // as_buyer = false
 
     // Verificar que o escrow está marcado como disputado
     let escrow = client.get_escrow(&escrow_id);
@@ -227,10 +227,10 @@ fn test_dispute_fails_on_non_active_escrow() {
     let client = EscrowContractClient::new(&env, &contract_id);
 
     // Primeira disputa
-    client.dispute_escrow(&escrow_id, &true);
+    client.dispute_escrow(&escrow_id, &true, &buyer, &0);
 
     // Tentar disputar novamente deve falhar pois já está disputado
-    client.dispute_escrow(&escrow_id, &true);
+    client.dispute_escrow(&escrow_id, &true, &buyer, &0);
 }
 
 #[test]
@@ -253,10 +253,10 @@ fn test_dispute_fails_on_released_escrow() {
     advance_time(&env, guarantee_days as u64 + 1);
 
     // Liberar pagamento
-    client.release_payment(&escrow_id);
+    client.release_payment(&escrow_id, &seller, &0);
 
     // Tentar disputar deve falhar
-    client.dispute_escrow(&escrow_id, &true);
+    client.dispute_escrow(&escrow_id, &true, &buyer, &0);
 }
 
 // ============================================================================
@@ -279,10 +279,10 @@ fn test_propose_resolution_buyer_favors_buyer() {
     let client = EscrowContractClient::new(&env, &contract_id);
 
     // Abrir disputa
-    client.dispute_escrow(&escrow_id, &true);
+    client.dispute_escrow(&escrow_id, &true, &buyer, &0);
 
     // Buyer propõe resolução a favor dele (refund)
-    client.prop_res(&escrow_id, &true, &false); // as_buyer=true, favor_seller=false
+    client.prop_res(&escrow_id, &true, &false, &buyer, &0); // as_buyer=true, favor_seller=false
 
     // Verificar que a resolução foi registrada
     let escrow = client.get_escrow(&escrow_id);
@@ -306,10 +306,10 @@ fn test_propose_resolution_buyer_favors_seller() {
     let client = EscrowContractClient::new(&env, &contract_id);
 
     // Abrir disputa
-    client.dispute_escrow(&escrow_id, &true);
+    client.dispute_escrow(&escrow_id, &true, &buyer, &0);
 
     // Buyer propõe resolução a favor do seller (release)
-    client.prop_res(&escrow_id, &true, &true); // as_buyer=true, favor_seller=true
+    client.prop_res(&escrow_id, &true, &true, &buyer, &0); // as_buyer=true, favor_seller=true
 
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.buyer_resolution, 2); // 2 = favor seller
@@ -331,10 +331,10 @@ fn test_propose_resolution_seller_favors_buyer() {
     let client = EscrowContractClient::new(&env, &contract_id);
 
     // Abrir disputa
-    client.dispute_escrow(&escrow_id, &false); // Seller abre
+    client.dispute_escrow(&escrow_id, &false, &seller, &0); // Seller abre
 
     // Seller propõe resolução a favor do buyer (refund)
-    client.prop_res(&escrow_id, &false, &false); // as_buyer=false, favor_seller=false
+    client.prop_res(&escrow_id, &false, &false, &seller, &0); // as_buyer=false, favor_seller=false
 
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.seller_resolution, 1); // 1 = favor buyer
@@ -356,10 +356,10 @@ fn test_propose_resolution_seller_favors_seller() {
     let client = EscrowContractClient::new(&env, &contract_id);
 
     // Abrir disputa
-    client.dispute_escrow(&escrow_id, &false); // Seller abre
+    client.dispute_escrow(&escrow_id, &false, &seller, &0); // Seller abre
 
     // Seller propõe resolução a favor dele (release)
-    client.prop_res(&escrow_id, &false, &true); // as_buyer=false, favor_seller=true
+    client.prop_res(&escrow_id, &false, &true, &seller, &0); // as_buyer=false, favor_seller=true
 
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.seller_resolution, 2); // 2 = favor seller
@@ -382,7 +382,7 @@ fn test_propose_resolution_fails_on_non_disputed_escrow() {
     let client = EscrowContractClient::new(&env, &contract_id);
 
     // Tentar propor resolução sem abrir disputa deve falhar
-    client.prop_res(&escrow_id, &true, &false);
+    client.prop_res(&escrow_id, &true, &false, &buyer, &0);
 }
 
 #[test]
@@ -402,13 +402,13 @@ fn test_propose_resolution_fails_when_buyer_votes_twice() {
     let client = EscrowContractClient::new(&env, &contract_id);
 
     // Abrir disputa
-    client.dispute_escrow(&escrow_id, &true);
+    client.dispute_escrow(&escrow_id, &true, &buyer, &0);
 
     // Buyer propõe resolução
-    client.prop_res(&escrow_id, &true, &false);
+    client.prop_res(&escrow_id, &true, &false, &buyer, &0);
 
     // Tentar propor novamente deve falhar
-    client.prop_res(&escrow_id, &true, &true);
+    client.prop_res(&escrow_id, &true, &true, &buyer, &0);
 }
 
 #[test]
@@ -428,13 +428,13 @@ fn test_propose_resolution_fails_when_seller_votes_twice() {
     let client = EscrowContractClient::new(&env, &contract_id);
 
     // Abrir disputa
-    client.dispute_escrow(&escrow_id, &false);
+    client.dispute_escrow(&escrow_id, &false, &seller, &0);
 
     // Seller propõe resolução
-    client.prop_res(&escrow_id, &false, &true);
+    client.prop_res(&escrow_id, &false, &true, &seller, &0);
 
     // Tentar propor novamente deve falhar
-    client.prop_res(&escrow_id, &false, &false);
+    client.prop_res(&escrow_id, &false, &false, &seller, &0);
 }
 
 // ============================================================================
@@ -457,11 +457,11 @@ fn test_resolve_dispute_both_agree_favor_buyer() {
     let client = EscrowContractClient::new(&env, &contract_id);
 
     // Abrir disputa
-    client.dispute_escrow(&escrow_id, &true);
+    client.dispute_escrow(&escrow_id, &true, &buyer, &0);
 
     // Ambos propõem favor buyer (refund)
-    client.prop_res(&escrow_id, &true, &false);  // Buyer vota favor buyer
-    client.prop_res(&escrow_id, &false, &false); // Seller vota favor buyer
+    client.prop_res(&escrow_id, &true, &false, &buyer, &0);  // Buyer vota favor buyer
+    client.prop_res(&escrow_id, &false, &false, &seller, &0); // Seller vota favor buyer
 
     // Resolver disputa
     client.res_disp(&escrow_id);
@@ -495,11 +495,11 @@ fn test_resolve_dispute_both_agree_favor_seller_with_fee_collected_on_create() {
     let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, amount, fee_bps, guarantee_days);
 
     // Abrir disputa
-    client.dispute_escrow(&escrow_id, &true);
+    client.dispute_escrow(&escrow_id, &true, &buyer, &0);
 
     // Ambos propõem favor seller (release)
-    client.prop_res(&escrow_id, &true, &true);   // Buyer vota favor seller
-    client.prop_res(&escrow_id, &false, &true);  // Seller vota favor seller
+    client.prop_res(&escrow_id, &true, &true, &buyer, &0);   // Buyer vota favor seller
+    client.prop_res(&escrow_id, &false, &true, &seller, &0);  // Seller vota favor seller
 
     // Saldo antes da resolução
     // let seller_balance_before = token.balance(&seller);
@@ -534,11 +534,11 @@ fn test_resolve_dispute_both_agree_favor_seller_with_fee_collected_on_release() 
     let client = EscrowContractClient::new(&env, &contract_id);
 
     // Abrir disputa
-    client.dispute_escrow(&escrow_id, &true);
+    client.dispute_escrow(&escrow_id, &true, &buyer, &0);
 
     // Ambos propõem favor seller (release)
-    client.prop_res(&escrow_id, &true, &true);   // Buyer vota favor seller
-    client.prop_res(&escrow_id, &false, &true);  // Seller vota favor seller
+    client.prop_res(&escrow_id, &true, &true, &buyer, &0);   // Buyer vota favor seller
+    client.prop_res(&escrow_id, &false, &true, &seller, &0);  // Seller vota favor seller
 
     let admin = Address::generate(&env);
 
@@ -574,10 +574,10 @@ fn test_resolve_dispute_fails_without_both_votes() {
     let client = EscrowContractClient::new(&env, &contract_id);
 
     // Abrir disputa
-    client.dispute_escrow(&escrow_id, &true);
+    client.dispute_escrow(&escrow_id, &true, &buyer, &0);
 
     // Apenas buyer vota
-    client.prop_res(&escrow_id, &true, &false);
+    client.prop_res(&escrow_id, &true, &false, &buyer, &0);
 
     // Tentar resolver sem o voto do seller deve falhar
     client.res_disp(&escrow_id);
@@ -600,13 +600,13 @@ fn test_resolve_dispute_fails_with_disagreement() {
     let client = EscrowContractClient::new(&env, &contract_id);
 
     // Abrir disputa
-    client.dispute_escrow(&escrow_id, &true);
+    client.dispute_escrow(&escrow_id, &true, &buyer, &0);
 
     // Buyer vota favor buyer
-    client.prop_res(&escrow_id, &true, &false);
+    client.prop_res(&escrow_id, &true, &false, &buyer, &0);
 
     // Seller vota favor seller (discrepância)
-    client.prop_res(&escrow_id, &false, &true);
+    client.prop_res(&escrow_id, &false, &true, &seller, &0);
 
     // Tentar resolver com votos divergentes deve falhar
     client.res_disp(&escrow_id);
@@ -660,20 +660,20 @@ fn test_complete_dispute_flow_buyer_refund_agreement() {
     assert_eq!(escrow.seller_resolution, 0);
 
     // 2. Buyer abre disputa
-    client.dispute_escrow(&escrow_id, &true);
+    client.dispute_escrow(&escrow_id, &true, &buyer, &0);
 
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.status, EscrowStatus::Disputed);
     assert_eq!(escrow.disputed_by_buyer, true);
 
     // 3. Buyer propõe refund
-    client.prop_res(&escrow_id, &true, &false);
+    client.prop_res(&escrow_id, &true, &false, &buyer, &0);
 
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.buyer_resolution, 1);
 
     // 4. Seller concorda com refund
-    client.prop_res(&escrow_id, &false, &false);
+    client.prop_res(&escrow_id, &false, &false, &seller, &0);
 
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.seller_resolution, 1);
@@ -706,16 +706,16 @@ fn test_complete_dispute_flow_seller_release_agreement() {
     let client = EscrowContractClient::new(&env, &contract_id);
 
     // 1. Seller abre disputa
-    client.dispute_escrow(&escrow_id, &false);
+    client.dispute_escrow(&escrow_id, &false, &seller, &0);
 
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.disputed_by_buyer, false);
 
     // 2. Seller propõe release
-    client.prop_res(&escrow_id, &false, &true);
+    client.prop_res(&escrow_id, &false, &true, &seller, &0);
 
     // 3. Buyer concorda com release
-    client.prop_res(&escrow_id, &true, &true);
+    client.prop_res(&escrow_id, &true, &true, &buyer, &0);
 
     let admin = Address::generate(&env);
     // let seller_balance_before = token.balance(&seller);
@@ -748,7 +748,7 @@ fn test_dispute_then_normal_release_blocked() {
     let client = EscrowContractClient::new(&env, &contract_id);
 
     // Abrir disputa
-    client.dispute_escrow(&escrow_id, &true);
+    client.dispute_escrow(&escrow_id, &true, &buyer, &0);
 
     // Avançar tempo além do período de garantia
     advance_time(&env, guarantee_days as u64 + 1);
@@ -777,7 +777,7 @@ fn test_dispute_within_guarantee_period() {
 
     // Abrir disputa dentro do período de garantia
     advance_time(&env, 3); // 3 dias
-    client.dispute_escrow(&escrow_id, &true);
+    client.dispute_escrow(&escrow_id, &true, &buyer, &0);
 
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.status, EscrowStatus::Disputed);
@@ -802,8 +802,122 @@ fn test_dispute_after_guarantee_period() {
     advance_time(&env, guarantee_days as u64 + 1);
 
     // Ainda é possível abrir disputa (o contrato permite)
-    client.dispute_escrow(&escrow_id, &true);
+    client.dispute_escrow(&escrow_id, &true, &buyer, &0);
 
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.status, EscrowStatus::Disputed);
+}
+
+// ============================================================================
+
+// ============================================================================
+// Nonce Tests
+// ============================================================================
+
+#[test]
+fn test_get_nonce_initial_zero() {
+    let (env, contract_id, _token) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let user = Address::generate(&env);
+
+    // Initial nonce should be 0
+    let nonce = client.get_nonce(&user);
+    assert_eq!(nonce, 0);
+}
+
+// ============================================================================
+// Zero Guarantee Days Tests
+// ============================================================================
+
+#[test]
+fn test_validate_guarantee_days_zero_is_allowed() {
+    // guarantee_days = 0 deve ser permitido (release imediato)
+    let result = validation::validate_guarantee_days(0);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_validate_guarantee_days_one_is_allowed() {
+    let result = validation::validate_guarantee_days(1);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_validate_guarantee_days_too_large_rejected() {
+    let result = validation::validate_guarantee_days(36_501);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_calc_release_timestamp_with_zero_days() {
+    let env = Env::default();
+    let now = env.ledger().timestamp();
+
+    // Com guarantee_days = 0, release_at deve ser igual ao timestamp atual
+    let release_at = math::calc_release_timestamp(now, 0);
+    assert_eq!(release_at, now);
+}
+
+#[test]
+fn test_is_expired_with_zero_guarantee_days() {
+    // Com release_at = now, is_expired deve retornar true imediatamente
+    let now = 1000u64;
+    let release_at = 1000u64; // = now (guarantee_days = 0)
+
+    let is_expired = math::is_expired(now, release_at);
+    assert!(is_expired);
+}
+
+#[test]
+fn test_release_payment_immediate_with_zero_guarantee_days() {
+    let (env, contract_id, token) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let amount = 1000i128;
+    let fee_bps = 400u32; // 4%
+    let guarantee_days = 0u32; // ← Zero: release imediato
+
+    // Criar escrow com guarantee_days = 0
+    let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, amount, fee_bps, guarantee_days);
+
+    // Verificar que o escrow foi criado com sucesso
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.status, EscrowStatus::Active);
+    assert_eq!(escrow.guarantee_days, 0);
+
+    // Verificar que release_at é igual ao timestamp atual (ou muito próximo)
+    let now = env.ledger().timestamp();
+    assert_eq!(escrow.release_at, now);
+
+    // Mock auths e fazer release imediatamente
+    env.mock_all_auths();
+    client.release_payment(&escrow_id, &seller, &0);
+
+    // Verificar que o pagamento foi liberado
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.status, EscrowStatus::Released);
+}
+
+#[test]
+#[should_panic(expected = "GuaranteePeriodExpired")]
+fn test_request_refund_blocked_with_zero_guarantee_days() {
+    let (env, contract_id, token) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let amount = 1000i128;
+    let fee_bps = 400u32;
+    let guarantee_days = 0u32; // ← Zero: release imediato
+
+    let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, amount, fee_bps, guarantee_days);
+
+    // Mock auths
+    env.mock_all_auths();
+
+    // Tentar request_refund deve falhar porque release_at = now (período expirado)
+    client.request_refund(&escrow_id, &buyer, &0);
 }

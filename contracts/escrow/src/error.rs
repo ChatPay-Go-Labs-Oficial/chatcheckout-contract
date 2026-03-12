@@ -52,4 +52,16 @@ pub enum EscrowError {
 
     /// Cannot resolve own dispute
     CannotResolveOwnDispute = 16,
+
+    /// Invalid signature for meta-transaction
+    InvalidSignature = 17,
+
+    /// Nonce mismatch - replay attack detected
+    InvalidNonce = 18,
+
+    /// Signature expired
+    SignatureExpired = 19,
+
+    /// Invalid function selector for meta-transaction
+    InvalidFunctionSelector = 20,
 }
