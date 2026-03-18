@@ -3,13 +3,6 @@ use crate::error::EscrowError;
 use crate::storage::{increment_nonce, read_nonce};
 use soroban_sdk::{Address, Env};
 
-/// Function selectors for meta-transactions
-/// These identify which function is being called in a relayed transaction
-pub const FN_RELEASE_PAYMENT: u32 = 1;
-pub const FN_REQUEST_REFUND: u32 = 2;
-pub const FN_DISPUTE_ESCROW: u32 = 3;
-pub const FN_PROP_RES: u32 = 4;
-
 /// Verify nonce and increment for replay protection
 ///
 /// This function checks that the expected nonce matches the current nonce

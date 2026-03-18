@@ -41,27 +41,21 @@ pub enum EscrowError {
     /// Fee amount exceeds escrow amount
     FeeExceedsAmount = 12,
 
-    /// Escrow is not in disputed status
-    EscrowNotDisputed = 13,
-
-    /// Dispute already resolved
-    DisputeAlreadyResolved = 14,
-
-    /// Both parties must agree on resolution
-    BothPartiesMustAgree = 15,
-
-    /// Cannot resolve own dispute
-    CannotResolveOwnDispute = 16,
-
     /// Invalid signature for meta-transaction
-    InvalidSignature = 17,
+    InvalidSignature = 13,
 
     /// Nonce mismatch - replay attack detected
-    InvalidNonce = 18,
+    InvalidNonce = 14,
 
     /// Signature expired
-    SignatureExpired = 19,
+    SignatureExpired = 15,
 
     /// Invalid function selector for meta-transaction
-    InvalidFunctionSelector = 20,
+    InvalidFunctionSelector = 16,
+
+    /// Counter overflow (too many escrows)
+    CounterOverflow = 17,
+
+    /// Token not in allowed list
+    TokenNotAllowed = 18,
 }

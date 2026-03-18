@@ -1,4 +1,5 @@
-use soroban_sdk::{contracttype, Address, Env};
+use crate::error::EscrowError;
+use soroban_sdk::{contracttype, Address, Env, Vec};
 
 /// Storage keys for the escrow contract
 #[derive(Clone)]
@@ -8,6 +9,7 @@ pub enum DataKey {
     Counter,
     Config,
     Nonce(Address),
+    AllowedTokens,
 }
 
 /// Status of an escrow
@@ -17,7 +19,6 @@ pub enum EscrowStatus {
     Active,
     Released,
     Refunded,
-    Disputed,
 }
 
 /// Contract configuration
@@ -25,7 +26,7 @@ pub enum EscrowStatus {
 #[contracttype]
 pub struct Config {
     pub admin: Address,
-    pub collect_on_create: bool, // true: cobra no create; false: cobra no release
+    pub collect_on_create: bool, // true: collect on create; false: collect on release
 }
 
 /// Escrow data record
@@ -41,14 +42,8 @@ pub struct EscrowData {
     pub status: EscrowStatus,
     pub product_id: soroban_sdk::String,
     pub guarantee_days: u32,
-
-    // snapshot da taxa usada na criação (vem como parâmetro do backend)
+    /// Fee snapshot used at creation (comes as parameter from backend)
     pub fee_bps: u32,
-
-    // Dispute tracking fields (0 = not set, 1 = favor buyer, 2 = favor seller)
-    pub disputed_by_buyer: bool, // true if buyer initiated dispute
-    pub buyer_resolution: u32,  // 0 = no vote, 1 = favor buyer (refund), 2 = favor seller (release)
-    pub seller_resolution: u32,  // 0 = no vote, 1 = favor buyer (refund), 2 = favor seller (release)
 }
 
 // ============================================================================
@@ -59,7 +54,7 @@ pub fn read_config(env: &Env) -> Config {
     env.storage()
         .instance()
         .get(&DataKey::Config)
-        .unwrap_or_else(|| panic!("Config not initialized"))
+        .unwrap_or_else(|| Err(EscrowError::ConfigNotInitialized).unwrap())
 }
 
 pub fn write_config(env: &Env, cfg: &Config) {
@@ -70,21 +65,17 @@ pub fn write_config(env: &Env, cfg: &Config) {
 // Escrow Storage Access
 // ============================================================================
 
-pub fn read_escrow(env: &Env, escrow_id: u64) -> EscrowData {
+pub fn read_escrow(env: &Env, escrow_id: u64) -> Result<EscrowData, EscrowError> {
     env.storage()
         .persistent()
         .get(&DataKey::Escrow(escrow_id))
-        .unwrap_or_else(|| panic!("Escrow not found"))
+        .ok_or(EscrowError::EscrowNotFound)
 }
 
 pub fn write_escrow(env: &Env, escrow_id: u64, escrow: &EscrowData) {
     env.storage()
         .persistent()
         .set(&DataKey::Escrow(escrow_id), escrow);
-}
-
-pub fn has_escrow(env: &Env, escrow_id: u64) -> bool {
-    env.storage().persistent().has(&DataKey::Escrow(escrow_id))
 }
 
 // ============================================================================
@@ -124,7 +115,51 @@ pub fn increment_nonce(env: &Env, user: &Address) -> u64 {
     let current = read_nonce(env, user);
     let next = current
         .checked_add(1)
-        .unwrap_or_else(|| panic!("Nonce overflow"));
+        .ok_or(EscrowError::InvalidNonce).unwrap(); // Reusing InvalidNonce for overflow (unlikely in practice)
     write_nonce(env, user, next);
     current
+}
+
+// ============================================================================
+// Allowed Tokens Storage Access
+// ============================================================================
+
+/// Read the list of allowed tokens
+pub fn read_allowed_tokens(env: &Env) -> Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::AllowedTokens)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Write the list of allowed tokens
+pub fn write_allowed_tokens(env: &Env, tokens: &Vec<Address>) {
+    env.storage().instance().set(&DataKey::AllowedTokens, tokens);
+}
+
+/// Check if a token is in the allowed list
+pub fn is_token_allowed(env: &Env, token: &Address) -> bool {
+    let allowed = read_allowed_tokens(env);
+    allowed.iter().any(|t| t == *token)
+}
+
+/// Add a token to the allowed list
+pub fn add_allowed_token(env: &Env, token: &Address) {
+    let mut allowed = read_allowed_tokens(env);
+    if !allowed.iter().any(|t| t == *token) {
+        allowed.push_back(token.clone());
+    }
+    write_allowed_tokens(env, &allowed);
+}
+
+/// Remove a token from the allowed list
+pub fn remove_allowed_token(env: &Env, token: &Address) {
+    let allowed = read_allowed_tokens(env);
+    let mut new_allowed = Vec::new(env);
+    for t in allowed.iter() {
+        if t != *token {
+            new_allowed.push_back(t.clone());
+        }
+    }
+    write_allowed_tokens(env, &new_allowed);
 }

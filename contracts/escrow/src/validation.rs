@@ -1,6 +1,6 @@
 use crate::error::EscrowError;
 use crate::storage::{EscrowData, EscrowStatus};
-use soroban_sdk::{Env, String};
+use soroban_sdk::{Address, Env, String};
 
 // ============================================================================
 // Input Validation Functions
@@ -80,6 +80,16 @@ pub fn validate_refund_window(escrow: &EscrowData, env: &Env) -> Result<(), Escr
     }
 }
 
+/// Validate guarantee period has expired (for release_payment)
+pub fn validate_guarantee_period_expired(release_at: u64, env: &Env) -> Result<(), EscrowError> {
+    let now = env.ledger().timestamp();
+    if now < release_at {
+        Err(EscrowError::GuaranteePeriodNotExpired)
+    } else {
+        Ok(())
+    }
+}
+
 /// Validate fee does not exceed amount
 pub fn validate_fee_not_exceeds_amount(amount: i128, fee: i128) -> Result<(), EscrowError> {
     if fee >= amount {
@@ -90,14 +100,14 @@ pub fn validate_fee_not_exceeds_amount(amount: i128, fee: i128) -> Result<(), Es
 }
 
 // ============================================================================
-// Dispute Validation Functions
+// Token Validation Functions
 // ============================================================================
 
-/// Validate escrow is in disputed status
-pub fn validate_escrow_disputed(status: EscrowStatus) -> Result<(), EscrowError> {
-    if let EscrowStatus::Disputed = status {
+/// Validate token is in the allowed list
+pub fn validate_token_allowed(env: &Env, asset: &Address) -> Result<(), EscrowError> {
+    if crate::storage::is_token_allowed(env, asset) {
         Ok(())
     } else {
-        Err(EscrowError::EscrowNotDisputed)
+        Err(EscrowError::TokenNotAllowed)
     }
 }

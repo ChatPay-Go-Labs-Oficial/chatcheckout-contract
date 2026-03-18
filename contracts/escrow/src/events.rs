@@ -57,48 +57,32 @@ impl RequestRefundEvent {
     }
 }
 
-/// Event emitted when escrow is disputed
+// ============================================================================
+// Token Allowlist Events
+// ============================================================================
+
+/// Event emitted when a token is added to the allowed list
 #[contracttype]
-pub struct DisputeEscrowEvent {
-    pub escrow_id: u64,
-    pub disputed_by: Address,
-    pub as_buyer: bool,
+pub struct TokenAddedEvent {
+    pub token: Address,
 }
 
-impl DisputeEscrowEvent {
+impl TokenAddedEvent {
     pub fn publish(self, env: &Env) {
-        let topics = (symbol_short!("dispute"),);
+        let topics = (symbol_short!("token_add"),);
         env.events().publish(topics, self);
     }
 }
 
-/// Event emitted when a party proposes a resolution to the dispute
+/// Event emitted when a token is removed from the allowed list
 #[contracttype]
-pub struct ProposeResolutionEvent {
-    pub escrow_id: u64,
-    pub proposed_by: Address,
-    pub favor_seller: bool, // true = favor seller (release), false = favor buyer (refund)
+pub struct TokenRemovedEvent {
+    pub token: Address,
 }
 
-impl ProposeResolutionEvent {
+impl TokenRemovedEvent {
     pub fn publish(self, env: &Env) {
-        let topics = (symbol_short!("prop_res"),);
-        env.events().publish(topics, self);
-    }
-}
-
-/// Event emitted when dispute is resolved
-#[contracttype]
-pub struct ResolveDisputeEvent {
-    pub escrow_id: u64,
-    pub resolved_in_favor_of: Address, // buyer or seller address
-    pub amount: i128,
-    pub resolution_type: bool, // true = released to seller, false = refunded to buyer
-}
-
-impl ResolveDisputeEvent {
-    pub fn publish(self, env: &Env) {
-        let topics = (symbol_short!("res_disp"),);
+        let topics = (symbol_short!("token_rem"),);
         env.events().publish(topics, self);
     }
 }
