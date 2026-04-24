@@ -126,15 +126,6 @@ pub fn validate_escrow_disputed(status: EscrowStatus) -> Result<(), EscrowError>
     }
 }
 
-/// Validate escrow is not already disputed
-pub fn validate_escrow_not_disputed(status: EscrowStatus) -> Result<(), EscrowError> {
-    if let EscrowStatus::Disputed = status {
-        Err(EscrowError::AlreadyDisputed)
-    } else {
-        Ok(())
-    }
-}
-
 /// Validate if an escrow can be disputed
 pub fn validate_can_dispute(escrow: &EscrowData, env: &Env) -> Result<(), EscrowError> {
     // Already disputed?
