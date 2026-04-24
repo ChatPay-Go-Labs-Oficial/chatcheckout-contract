@@ -1,11 +1,11 @@
-use soroban_sdk::{contracttype, symbol_short, Address, Env, String};
+use soroban_sdk::{contractevent, Address, String};
 
 // ============================================================================
 // Event Types
 // ============================================================================
 
 /// Event emitted when a new escrow is created
-#[contracttype]
+#[contractevent]
 pub struct CreateEscrowEvent {
     pub escrow_id: u64,
     pub buyer: Address,
@@ -15,17 +15,11 @@ pub struct CreateEscrowEvent {
     pub fee_bps: u32,
     pub guarantee_days: u32,
     pub product_id: String,
-}
-
-impl CreateEscrowEvent {
-    pub fn publish(self, env: &Env) {
-        let topics = (symbol_short!("create"),);
-        env.events().publish(topics, self);
-    }
+    pub allow_early_release: bool,
 }
 
 /// Event emitted when payment is released to seller
-#[contracttype]
+#[contractevent]
 pub struct ReleasePaymentEvent {
     pub escrow_id: u64,
     pub seller: Address,
@@ -34,15 +28,8 @@ pub struct ReleasePaymentEvent {
     pub to_seller: i128,
 }
 
-impl ReleasePaymentEvent {
-    pub fn publish(self, env: &Env) {
-        let topics = (symbol_short!("release"),);
-        env.events().publish(topics, self);
-    }
-}
-
 /// Event emitted when refund is issued to buyer
-#[contracttype]
+#[contractevent]
 pub struct RequestRefundEvent {
     pub escrow_id: u64,
     pub buyer: Address,
@@ -50,39 +37,55 @@ pub struct RequestRefundEvent {
     pub asset: Address,
 }
 
-impl RequestRefundEvent {
-    pub fn publish(self, env: &Env) {
-        let topics = (symbol_short!("refund"),);
-        env.events().publish(topics, self);
-    }
-}
-
 // ============================================================================
 // Token Allowlist Events
 // ============================================================================
 
 /// Event emitted when a token is added to the allowed list
-#[contracttype]
+#[contractevent]
 pub struct TokenAddedEvent {
     pub token: Address,
 }
 
-impl TokenAddedEvent {
-    pub fn publish(self, env: &Env) {
-        let topics = (symbol_short!("token_add"),);
-        env.events().publish(topics, self);
-    }
-}
-
 /// Event emitted when a token is removed from the allowed list
-#[contracttype]
+#[contractevent]
 pub struct TokenRemovedEvent {
     pub token: Address,
 }
 
-impl TokenRemovedEvent {
-    pub fn publish(self, env: &Env) {
-        let topics = (symbol_short!("token_rem"),);
-        env.events().publish(topics, self);
-    }
+// ============================================================================
+// Dispute Resolution Events
+// ============================================================================
+
+/// Event emitted when a dispute is initiated
+#[contractevent]
+pub struct DisputeEscrowEvent {
+    pub escrow_id: u64,
+    pub initiator: Address,
+}
+/// Event emitted when a party proposes a resolution
+#[contractevent]
+pub struct ProposeResolutionEvent {
+    pub escrow_id: u64,
+    pub proposer: Address,
+    pub favor_buyer: bool,
+}
+
+/// Event emitted when dispute is resolved
+#[contractevent]
+pub struct ResolveDisputeEvent {
+    pub escrow_id: u64,
+    pub favor_buyer: bool,
+    pub amount: i128,
+    pub fee: i128,
+    pub recipient: Address,
+    pub resolved_by: Address,
+}
+
+/// Event emitted when admin withdraws funds
+#[contractevent]
+pub struct AdminWithdrawEvent {
+    pub admin: Address,
+    pub asset: Address,
+    pub amount: i128,
 }

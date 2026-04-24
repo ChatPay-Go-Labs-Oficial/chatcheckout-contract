@@ -24,10 +24,11 @@ pub fn validate_fee_bps_range(fee_bps: u32) -> Result<(), EscrowError> {
     }
 }
 
-/// Validate guarantee days is within reasonable range (0-36500)
-/// days = 0 allows immediate release (no guarantee period)
+/// Validate guarantee days is within reasonable range (1-36500)
+/// days must be at least 1 to ensure buyer protection
+/// Maximum 100 years (36500 days)
 pub fn validate_guarantee_days(days: u32) -> Result<(), EscrowError> {
-    if days > 36_500 {
+    if days < 1 || days > 36_500 {
         Err(EscrowError::InvalidGuaranteeDays)
     } else {
         Ok(())
@@ -109,5 +110,79 @@ pub fn validate_token_allowed(env: &Env, asset: &Address) -> Result<(), EscrowEr
         Ok(())
     } else {
         Err(EscrowError::TokenNotAllowed)
+    }
+}
+
+// ============================================================================
+// Dispute Validation Functions
+// ============================================================================
+
+/// Validate escrow is in disputed status
+pub fn validate_escrow_disputed(status: EscrowStatus) -> Result<(), EscrowError> {
+    if let EscrowStatus::Disputed = status {
+        Ok(())
+    } else {
+        Err(EscrowError::NotDisputed)
+    }
+}
+
+/// Validate escrow is not already disputed
+pub fn validate_escrow_not_disputed(status: EscrowStatus) -> Result<(), EscrowError> {
+    if let EscrowStatus::Disputed = status {
+        Err(EscrowError::AlreadyDisputed)
+    } else {
+        Ok(())
+    }
+}
+
+/// Validate if an escrow can be disputed
+pub fn validate_can_dispute(escrow: &EscrowData, env: &Env) -> Result<(), EscrowError> {
+    // Already disputed?
+    if let EscrowStatus::Disputed = escrow.status {
+        return Err(EscrowError::AlreadyDisputed);
+    }
+
+    // Active escrows can always be disputed
+    if let EscrowStatus::Active = escrow.status {
+        return Ok(());
+    }
+
+    // Released escrows can be disputed ONLY if early release was allowed AND guarantee period is still active
+    if let EscrowStatus::Released = escrow.status {
+        if escrow.allow_early_release {
+            let now = env.ledger().timestamp();
+            if now < escrow.release_at {
+                return Ok(());
+            }
+        }
+    }
+
+    // Otherwise, refund logic is restricted
+    Err(EscrowError::EscrowNotActive)
+}
+
+/// Validate both parties have proposed and agree on resolution
+pub fn validate_dispute_resolution(
+    buyer_proposal: Option<bool>,
+    seller_proposal: Option<bool>,
+) -> Result<bool, EscrowError> {
+    match (buyer_proposal, seller_proposal) {
+        (Some(buyer_choice), Some(seller_choice)) => {
+            if buyer_choice == seller_choice {
+                Ok(buyer_choice)
+            } else {
+                Err(EscrowError::BothPartiesMustAgree)
+            }
+        }
+        _ => Err(EscrowError::NoDisputeToResolve),
+    }
+}
+
+/// Validate party hasn't already proposed
+pub fn validate_not_yet_proposed(proposal: Option<bool>) -> Result<(), EscrowError> {
+    if proposal.is_some() {
+        Err(EscrowError::AlreadyProposed)
+    } else {
+        Ok(())
     }
 }

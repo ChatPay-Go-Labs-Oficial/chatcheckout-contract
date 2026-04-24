@@ -58,4 +58,22 @@ pub enum EscrowError {
 
     /// Token not in allowed list
     TokenNotAllowed = 18,
+
+    /// Escrow is not in disputed status
+    NotDisputed = 19,
+
+    /// Escrow is already disputed
+    AlreadyDisputed = 20,
+
+    /// No dispute to resolve (no proposals exist)
+    NoDisputeToResolve = 21,
+
+    /// Dispute already resolved
+    DisputeAlreadyResolved = 22,
+
+    /// Both parties must agree on resolution
+    BothPartiesMustAgree = 23,
+
+    /// Party has already proposed resolution
+    AlreadyProposed = 24,
 }

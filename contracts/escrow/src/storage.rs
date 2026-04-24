@@ -19,6 +19,7 @@ pub enum EscrowStatus {
     Active,
     Released,
     Refunded,
+    Disputed,
 }
 
 /// Contract configuration
@@ -44,6 +45,12 @@ pub struct EscrowData {
     pub guarantee_days: u32,
     /// Fee snapshot used at creation (comes as parameter from backend)
     pub fee_bps: u32,
+    /// Whether seller can release payment before guarantee period expires
+    pub allow_early_release: bool,
+    /// Buyer's proposal for dispute resolution (Some(true) = favor buyer, Some(false) = favor seller)
+    pub buyer_proposal: Option<bool>,
+    /// Seller's proposal for dispute resolution
+    pub seller_proposal: Option<bool>,
 }
 
 // ============================================================================

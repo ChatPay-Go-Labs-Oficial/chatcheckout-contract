@@ -18,9 +18,10 @@ clean:
 
 create_escrow:
 	stellar contract invoke \
-  --id CBQ6MF3T7A3OOPXJ3WS3DGBQLSWRNDWRXELD2VUSQZLA2EY7STUH23JH \
+  --id CCC7I5HCCF7YTFFTXIHQ4DGZX4W6SODEMQF24CPJRS37KQNHGONYUL7A \
   --source-account maycon \
   -- create_escrow \
+  --allow_early_release true \
   --buyer maycon \
   --seller GBBIVZN5N7EMYMQHZL4ME64GWDM5REJDLFBDET7KLIIA6GQRQVJ2IQWE \
   --amount 454354147 \
@@ -31,31 +32,31 @@ create_escrow:
 
 get_escrow:
 	stellar contract invoke \
-  --id CBQ6MF3T7A3OOPXJ3WS3DGBQLSWRNDWRXELD2VUSQZLA2EY7STUH23JH \
+  --id CCC7I5HCCF7YTFFTXIHQ4DGZX4W6SODEMQF24CPJRS37KQNHGONYUL7A \
   --source-account maycon \
   -- get_escrow \
   --escrow_id $(id)
 
 add_allowed_token:
 	stellar contract invoke \
-  	--id CBQ6MF3T7A3OOPXJ3WS3DGBQLSWRNDWRXELD2VUSQZLA2EY7STUH23JH \
+  	--id CCC7I5HCCF7YTFFTXIHQ4DGZX4W6SODEMQF24CPJRS37KQNHGONYUL7A \
   	--source-account maycon \
   	-- add_allowed_token \
   	--token CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC
 
 get_allowed_tokens:
-	stellar contract invoke --id CBQ6MF3T7A3OOPXJ3WS3DGBQLSWRNDWRXELD2VUSQZLA2EY7STUH23JH --source-account maycon -- get_allowed_tokens
+	stellar contract invoke --id CCC7I5HCCF7YTFFTXIHQ4DGZX4W6SODEMQF24CPJRS37KQNHGONYUL7A --source-account maycon -- get_allowed_tokens
 
 get_nonce:
 	stellar contract invoke \
-	--id CBQ6MF3T7A3OOPXJ3WS3DGBQLSWRNDWRXELD2VUSQZLA2EY7STUH23JH \
+	--id CCC7I5HCCF7YTFFTXIHQ4DGZX4W6SODEMQF24CPJRS37KQNHGONYUL7A \
 	--source-account maycon \
 	-- get_nonce \
 	--user maycon
 
 release_payment:
 	stellar contract invoke \
-  	--id CBQ6MF3T7A3OOPXJ3WS3DGBQLSWRNDWRXELD2VUSQZLA2EY7STUH23JH \
+  	--id CCC7I5HCCF7YTFFTXIHQ4DGZX4W6SODEMQF24CPJRS37KQNHGONYUL7A \
   	--source-account maycon \
   	-- release_payment \
   	--escrow_id $(id) \
@@ -65,7 +66,7 @@ release_payment:
 
 request_refund:
 	stellar contract invoke \
-  --id CBQ6MF3T7A3OOPXJ3WS3DGBQLSWRNDWRXELD2VUSQZLA2EY7STUH23JH \
+  --id CCC7I5HCCF7YTFFTXIHQ4DGZX4W6SODEMQF24CPJRS37KQNHGONYUL7A \
   --source-account maycon \
   -- request_refund \
   --escrow_id $(id) \
@@ -75,30 +76,30 @@ request_refund:
 
 dispute_escrow:
 	stellar contract invoke \
-  --id CBQ6MF3T7A3OOPXJ3WS3DGBQLSWRNDWRXELD2VUSQZLA2EY7STUH23JH \
+  --id CCC7I5HCCF7YTFFTXIHQ4DGZX4W6SODEMQF24CPJRS37KQNHGONYUL7A \
   --source-account maycon \
   -- dispute_escrow \
   --escrow_id $(id) \
-  --as_buyer true \
-  --user maycon \
+  --caller maycon \
   --nonce $(nonce)
 
 
 prop_res:
 	stellar contract invoke \
-  --id CBQ6MF3T7A3OOPXJ3WS3DGBQLSWRNDWRXELD2VUSQZLA2EY7STUH23JH \
+  --id CCC7I5HCCF7YTFFTXIHQ4DGZX4W6SODEMQF24CPJRS37KQNHGONYUL7A \
   --source-account maycon \
-  -- prop_res \
+  -- propose_resolution \
   --escrow_id $(id) \
-  --as_buyer true \
-  --favor_seller true \
-  --user maycon \
+  --caller maycon \
+  --favor_buyer true \
   --nonce $(nonce)
 
 
 res_disp:
 	stellar contract invoke \
-  --id CBQ6MF3T7A3OOPXJ3WS3DGBQLSWRNDWRXELD2VUSQZLA2EY7STUH23JH \
+  --id CCC7I5HCCF7YTFFTXIHQ4DGZX4W6SODEMQF24CPJRS37KQNHGONYUL7A \
   --source-account maycon \
-  -- res_disp \
-  --escrow_id $(id) 
+  -- resolve_dispute \
+  --escrow_id $(id) \
+  --caller maycon \
+  --nonce $(nonce)

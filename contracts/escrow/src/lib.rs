@@ -55,6 +55,26 @@ impl EscrowContract {
         storage::read_config(&env)
     }
 
+    /// Withdraw funds from the contract (admin only)
+    pub fn admin_withdraw(env: Env, asset: Address, amount: i128) -> Result<(), EscrowError> {
+        let cfg = storage::read_config(&env);
+        cfg.admin.require_auth();
+
+        validation::validate_amount_positive(amount)?;
+
+        let token = soroban_sdk::token::Client::new(&env, &asset);
+        token.transfer(&env.current_contract_address(), &cfg.admin, &amount);
+
+        AdminWithdrawEvent {
+            admin: cfg.admin,
+            asset,
+            amount,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
     // ============================================================================
     // Token Allowlist Management (Admin Only)
     // ============================================================================
@@ -109,6 +129,7 @@ impl EscrowContract {
         fee_bps: u32,
         guarantee_days: u32,
         product_id: String,
+        allow_early_release: bool,
     ) -> Result<u64, EscrowError> {
         // Require buyer authorization (required for transfers from them)
         buyer.require_auth();
@@ -156,6 +177,9 @@ impl EscrowContract {
             product_id: product_id.clone(),
             guarantee_days,
             fee_bps,
+            allow_early_release,
+            buyer_proposal: None,
+            seller_proposal: None,
         };
 
         storage::write_escrow(&env, escrow_id, &escrow);
@@ -174,6 +198,7 @@ impl EscrowContract {
             fee_bps,
             guarantee_days,
             product_id,
+            allow_early_release,
         }
         .publish(&env);
 
@@ -220,9 +245,13 @@ impl EscrowContract {
             return Err(EscrowError::Unauthorized);
         }
 
-        // 5. Check guarantee period has expired
-        // Seller can only release payment AFTER the guarantee period expires
-        validation::validate_guarantee_period_expired(esc.release_at, &env)?;
+        // 5. Check guarantee period has expired OR early release is allowed
+        if esc.allow_early_release {
+            // Seller can release anytime if buyer agreed to early release
+        } else {
+            // Seller must wait for guarantee period to expire
+            validation::validate_guarantee_period_expired(esc.release_at, &env)?;
+        }
 
         // 6. Process fee and payment (same as original)
         let token = soroban_sdk::token::Client::new(&env, &esc.asset);
@@ -300,6 +329,198 @@ impl EscrowContract {
         }
         .publish(&env);
 
+        Ok(())
+    }
+
+    // ============================================================================
+    // Dispute Resolution
+    // ============================================================================
+
+    /// Initiate a dispute on an active escrow
+    pub fn dispute_escrow(
+        env: Env,
+        escrow_id: u64,
+        caller: Address,
+        nonce: u64,
+    ) -> Result<(), EscrowError> {
+        signature::verify_and_increment_nonce(&env, &caller, nonce)?;
+        caller.require_auth();
+
+        env.storage().persistent().extend_ttl(&storage::DataKey::Escrow(escrow_id), 100, 518_400);
+
+        let mut esc = storage::read_escrow(&env, escrow_id)?;
+
+        if esc.buyer != caller && esc.seller != caller {
+            return Err(EscrowError::Unauthorized);
+        }
+
+        validation::validate_can_dispute(&esc, &env)?;
+
+        esc.status = EscrowStatus::Disputed;
+        storage::write_escrow(&env, escrow_id, &esc);
+
+        DisputeEscrowEvent {
+            escrow_id,
+            initiator: caller,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Propose a resolution for a disputed escrow
+    pub fn propose_resolution(
+        env: Env,
+        escrow_id: u64,
+        caller: Address,
+        nonce: u64,
+        favor_buyer: bool,
+    ) -> Result<(), EscrowError> {
+        signature::verify_and_increment_nonce(&env, &caller, nonce)?;
+        caller.require_auth();
+
+        env.storage().persistent().extend_ttl(&storage::DataKey::Escrow(escrow_id), 100, 518_400);
+
+        let mut esc = storage::read_escrow(&env, escrow_id)?;
+
+        let is_buyer = esc.buyer == caller;
+        let is_seller = esc.seller == caller;
+
+        if !is_buyer && !is_seller {
+            return Err(EscrowError::Unauthorized);
+        }
+
+        validation::validate_escrow_disputed(esc.status.clone())?;
+
+        if is_buyer {
+            validation::validate_not_yet_proposed(esc.buyer_proposal)?;
+            esc.buyer_proposal = Some(favor_buyer);
+        } else {
+            validation::validate_not_yet_proposed(esc.seller_proposal)?;
+            esc.seller_proposal = Some(favor_buyer);
+        }
+
+        storage::write_escrow(&env, escrow_id, &esc);
+
+        ProposeResolutionEvent {
+            escrow_id,
+            proposer: caller,
+            favor_buyer,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Resolve a disputed escrow when both parties agree
+    pub fn resolve_dispute(
+        env: Env,
+        escrow_id: u64,
+        caller: Address,
+        nonce: u64,
+    ) -> Result<(), EscrowError> {
+        signature::verify_and_increment_nonce(&env, &caller, nonce)?;
+        caller.require_auth();
+
+        env.storage().persistent().extend_ttl(&storage::DataKey::Escrow(escrow_id), 100, 518_400);
+
+        let mut esc = storage::read_escrow(&env, escrow_id)?;
+
+        if esc.buyer != caller && esc.seller != caller {
+            return Err(EscrowError::Unauthorized);
+        }
+
+        validation::validate_escrow_disputed(esc.status.clone())?;
+
+        let favor_buyer = validation::validate_dispute_resolution(
+            esc.buyer_proposal,
+            esc.seller_proposal,
+        )?;
+
+        Self::execute_dispute_resolution(&env, escrow_id, &mut esc, favor_buyer, caller)?;
+
+        Ok(())
+    }
+
+    /// Admin resolves dispute when parties can't agree
+    pub fn admin_resolve_dispute(
+        env: Env,
+        escrow_id: u64,
+        favor_buyer: bool,
+        nonce: u64,
+    ) -> Result<(), EscrowError> {
+        let cfg = storage::read_config(&env);
+        signature::verify_and_increment_nonce(&env, &cfg.admin, nonce)?;
+        cfg.admin.require_auth();
+
+        env.storage().persistent().extend_ttl(&storage::DataKey::Escrow(escrow_id), 100, 518_400);
+
+        let mut esc = storage::read_escrow(&env, escrow_id)?;
+
+        validation::validate_escrow_disputed(esc.status.clone())?;
+
+        Self::execute_dispute_resolution(&env, escrow_id, &mut esc, favor_buyer, cfg.admin)?;
+
+        Ok(())
+    }
+
+    /// Helper function to execute dispute resolution (refund or release)
+    fn execute_dispute_resolution(
+        env: &Env,
+        escrow_id: u64,
+        esc: &mut EscrowData,
+        favor_buyer: bool,
+        resolved_by: Address,
+    ) -> Result<(), EscrowError> {
+        let token = soroban_sdk::token::Client::new(env, &esc.asset);
+        let cfg = storage::read_config(env);
+        let fee = math::calc_fee(esc.amount, esc.fee_bps);
+
+        if favor_buyer {
+            let mut to_buyer = esc.amount;
+
+            if !cfg.collect_on_create && fee > 0 {
+                validation::validate_fee_not_exceeds_amount(esc.amount, fee)?;
+                token.transfer(&env.current_contract_address(), &cfg.admin, &fee);
+                to_buyer = esc.amount.checked_sub(fee).ok_or(EscrowError::FeeExceedsAmount)?;
+            }
+
+            token.transfer(&env.current_contract_address(), &esc.buyer, &to_buyer);
+            esc.status = EscrowStatus::Refunded;
+
+            ResolveDisputeEvent {
+                escrow_id,
+                favor_buyer: true,
+                amount: esc.amount,
+                fee,
+                recipient: esc.buyer.clone(),
+                resolved_by,
+            }
+            .publish(env);
+        } else {
+            let mut to_seller = esc.amount;
+
+            if !cfg.collect_on_create && fee > 0 {
+                validation::validate_fee_not_exceeds_amount(esc.amount, fee)?;
+                token.transfer(&env.current_contract_address(), &cfg.admin, &fee);
+                to_seller = esc.amount.checked_sub(fee).ok_or(EscrowError::FeeExceedsAmount)?;
+            }
+
+            token.transfer(&env.current_contract_address(), &esc.seller, &to_seller);
+            esc.status = EscrowStatus::Released;
+
+            ResolveDisputeEvent {
+                escrow_id,
+                favor_buyer: false,
+                amount: esc.amount,
+                fee,
+                recipient: esc.seller.clone(),
+                resolved_by,
+            }
+            .publish(env);
+        }
+
+        storage::write_escrow(env, escrow_id, esc);
         Ok(())
     }
 }

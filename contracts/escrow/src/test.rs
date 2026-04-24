@@ -73,7 +73,7 @@ fn test_config_struct_refactored() {
 #[test]
 fn test_escrow_data_struct_refactored() {
     // Verify EscrowData struct was correctly refactored
-    // (only fee_bps, without flat_fee, fee_collected_on_create and dispute fields)
+    // (includes allow_early_release, buyer_proposal, seller_proposal)
     let env = Env::default();
 
     let escrow = EscrowData {
@@ -86,24 +86,32 @@ fn test_escrow_data_struct_refactored() {
         status: EscrowStatus::Active,
         product_id: String::from_str(&env, "test"),
         guarantee_days: 7,
-        fee_bps: 400, // Only fee_bps, without dispute fields
+        fee_bps: 400,
+        allow_early_release: false,
+        buyer_proposal: None,
+        seller_proposal: None,
     };
 
     // If it compiles, it's correct
     assert_eq!(escrow.fee_bps, 400);
     assert_eq!(escrow.guarantee_days, 7);
+    assert_eq!(escrow.allow_early_release, false);
+    assert_eq!(escrow.buyer_proposal, None);
+    assert_eq!(escrow.seller_proposal, None);
 }
 
 #[test]
 fn test_escrow_status_enum() {
-    // Verify EscrowStatus enum works correctly (without Disputed)
+    // Verify EscrowStatus enum works correctly (with Disputed)
     let status1 = EscrowStatus::Active;
     let status2 = EscrowStatus::Released;
     let status3 = EscrowStatus::Refunded;
+    let status4 = EscrowStatus::Disputed;
 
     assert_eq!(status1, EscrowStatus::Active);
     assert_eq!(status2, EscrowStatus::Released);
     assert_eq!(status3, EscrowStatus::Refunded);
+    assert_eq!(status4, EscrowStatus::Disputed);
 }
 
 // ============================================================================
@@ -111,7 +119,7 @@ fn test_escrow_status_enum() {
 // ============================================================================
 
 /// Helper function to set up test environment with contract and token
-fn setup_contract_with_token() -> (Env, Address, soroban_sdk::token::StellarAssetClient<'static>) {
+fn setup_contract_with_token() -> (Env, Address, soroban_sdk::token::StellarAssetClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -125,7 +133,7 @@ fn setup_contract_with_token() -> (Env, Address, soroban_sdk::token::StellarAsse
     // Register escrow contract - __constructor will be called automatically
     let contract_id = env.register(EscrowContract, (&admin, &false));
 
-    (env, contract_id, token)
+    (env, contract_id, token, admin)
 }
 
 /// Helper to create a test escrow
@@ -147,7 +155,7 @@ fn create_test_escrow(
     // Create escrow - pass token address as asset
     let token_address = token.address.clone();
     let product_id = soroban_sdk::String::from_str(env, "product-123");
-    client.create_escrow(buyer, seller, &amount, &token_address, &fee_bps, &guarantee_days, &product_id)
+    client.create_escrow(buyer, seller, &amount, &token_address, &fee_bps, &guarantee_days, &product_id, &false)
 }
 
 // ============================================================================
@@ -156,7 +164,7 @@ fn create_test_escrow(
 
 #[test]
 fn test_get_nonce_initial_zero() {
-    let (env, contract_id, _token) = setup_contract_with_token();
+    let (env, contract_id, token, token_admin) = setup_contract_with_token();
     let client = EscrowContractClient::new(&env, &contract_id);
 
     let user = Address::generate(&env);
@@ -167,14 +175,14 @@ fn test_get_nonce_initial_zero() {
 }
 
 // ============================================================================
-// Zero Guarantee Days Tests
+// Guarantee Days Validation Tests
 // ============================================================================
 
 #[test]
-fn test_validate_guarantee_days_zero_is_allowed() {
-    // guarantee_days = 0 should be allowed (immediate release)
+fn test_validate_guarantee_days_zero_is_rejected() {
+    // guarantee_days = 0 should be rejected (minimum 1 day required)
     let result = validation::validate_guarantee_days(0);
-    assert!(result.is_ok());
+    assert!(matches!(result, Err(EscrowError::InvalidGuaranteeDays)));
 }
 
 #[test]
@@ -189,65 +197,389 @@ fn test_validate_guarantee_days_too_large_rejected() {
     assert!(result.is_err());
 }
 
-#[test]
-fn test_calc_release_timestamp_with_zero_days() {
-    let env = Env::default();
-    let now = env.ledger().timestamp();
-
-    // With guarantee_days = 0, release_at should equal current timestamp
-    let release_at = math::calc_release_timestamp(now, 0);
-    assert_eq!(release_at, now);
-}
+// ============================================================================
+// Early Release Tests
+// ============================================================================
 
 #[test]
-fn test_release_payment_immediate_with_zero_guarantee_days() {
-    let (env, contract_id, token) = setup_contract_with_token();
-    let client = EscrowContractClient::new(&env, &contract_id);
-
-    let buyer = Address::generate(&env);
-    let seller = Address::generate(&env);
-    let amount = 1000i128;
-    let fee_bps = 400u32; // 4%
-    let guarantee_days = 0u32; // ← Zero: immediate release
-
-    // Create escrow with guarantee_days = 0
-    let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, amount, fee_bps, guarantee_days);
-
-    // Verify escrow was created successfully
-    let escrow = client.get_escrow(&escrow_id);
-    assert_eq!(escrow.status, EscrowStatus::Active);
-    assert_eq!(escrow.guarantee_days, 0);
-
-    // Verify release_at equals current timestamp (or very close)
-    let now = env.ledger().timestamp();
-    assert_eq!(escrow.release_at, now);
-
-    // Mock auths and release immediately
-    env.mock_all_auths();
-    client.release_payment(&escrow_id, &seller, &0);
-
-    // Verify payment was released
-    let escrow = client.get_escrow(&escrow_id);
-    assert_eq!(escrow.status, EscrowStatus::Released);
-}
-
-#[test]
-#[should_panic(expected = "GuaranteePeriodExpired")]
-fn test_request_refund_blocked_with_zero_guarantee_days() {
-    let (env, contract_id, token) = setup_contract_with_token();
+fn test_release_payment_with_early_release_allowed() {
+    let (env, contract_id, token, token_admin) = setup_contract_with_token();
     let client = EscrowContractClient::new(&env, &contract_id);
 
     let buyer = Address::generate(&env);
     let seller = Address::generate(&env);
     let amount = 1000i128;
     let fee_bps = 400u32;
-    let guarantee_days = 0u32; // ← Zero: immediate release
+    let guarantee_days = 7u32;
 
+    // Create escrow with allow_early_release = true
+    let token_address = token.address.clone();
+    let product_id = soroban_sdk::String::from_str(&env, "product-123");
+    token.mint(&buyer, &amount);
+    client.create_escrow(&buyer, &seller, &amount, &token_address, &fee_bps, &guarantee_days, &product_id, &true);
+
+    // Get the escrow_id (should be 1)
+    let escrow_id = 1u64;
+
+    // Mock auths and try to release immediately (before guarantee period)
+    env.mock_all_auths();
+    client.release_payment(&escrow_id, &seller, &0);
+
+    // Verify payment was released (should succeed with early release)
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.status, EscrowStatus::Released);
+}
+
+#[test]
+#[should_panic(expected = "GuaranteePeriodNotExpired")]
+fn test_release_payment_blocked_without_early_release() {
+    let (env, contract_id, token, token_admin) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let amount = 1000i128;
+    let fee_bps = 400u32;
+    let guarantee_days = 7u32;
+
+    // Create escrow with allow_early_release = false (default)
+    env.mock_all_auths();
+    let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, amount, fee_bps, guarantee_days);
+
+    // Mock auths and try to release immediately (before guarantee period)
+    env.mock_all_auths();
+    client.release_payment(&escrow_id, &seller, &0);
+
+    // Should fail with GuaranteePeriodNotExpired
+}
+
+#[test]
+fn test_create_escrow_with_early_release_true() {
+    let (env, contract_id, token, token_admin) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let amount = 1000i128;
+    let fee_bps = 400u32;
+    let guarantee_days = 7u32;
+
+    // Create escrow with allow_early_release = true
+    let token_address = token.address.clone();
+    let product_id = soroban_sdk::String::from_str(&env, "product-123");
+    token.mint(&buyer, &amount);
+    client.create_escrow(&buyer, &seller, &amount, &token_address, &fee_bps, &guarantee_days, &product_id, &true);
+
+    // Get the escrow_id (should be 1)
+    let escrow_id = 1u64;
+
+    // Verify escrow stores allow_early_release correctly
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.allow_early_release, true);
+}
+
+#[test]
+fn test_create_escrow_with_early_release_false() {
+    let (env, contract_id, token, token_admin) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let amount = 1000i128;
+    let fee_bps = 400u32;
+    let guarantee_days = 7u32;
+
+    // Create escrow with allow_early_release = false
+    env.mock_all_auths();
+    let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, amount, fee_bps, guarantee_days);
+
+    // Verify escrow stores allow_early_release correctly
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.allow_early_release, false);
+}
+
+// ============================================================================
+// Dispute Resolution Tests
+// ============================================================================
+
+#[test]
+fn test_dispute_escrow_by_buyer() {
+    let (env, contract_id, token, token_admin) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let amount = 1000i128;
+    let fee_bps = 400u32;
+    let guarantee_days = 7u32;
+
+    env.mock_all_auths();
+    let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, amount, fee_bps, guarantee_days);
+
+    // Mock auths and initiate dispute
+    env.mock_all_auths();
+    client.dispute_escrow(&escrow_id, &buyer, &0);
+
+    // Verify status changed to Disputed
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.status, EscrowStatus::Disputed);
+}
+
+#[test]
+fn test_dispute_escrow_by_seller() {
+    let (env, contract_id, token, token_admin) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let amount = 1000i128;
+    let fee_bps = 400u32;
+    let guarantee_days = 7u32;
+
+    env.mock_all_auths();
+    let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, amount, fee_bps, guarantee_days);
+
+    // Mock auths and initiate dispute
+    env.mock_all_auths();
+    client.dispute_escrow(&escrow_id, &seller, &0);
+
+    // Verify status changed to Disputed
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.status, EscrowStatus::Disputed);
+}
+
+#[test]
+#[should_panic(expected = "AlreadyDisputed")]
+fn test_dispute_escrow_already_disputed() {
+    let (env, contract_id, token, token_admin) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let amount = 1000i128;
+    let fee_bps = 400u32;
+    let guarantee_days = 7u32;
+
+    env.mock_all_auths();
     let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, amount, fee_bps, guarantee_days);
 
     // Mock auths
     env.mock_all_auths();
 
-    // Trying request_refund should fail because release_at = now (period expired)
-    client.request_refund(&escrow_id, &buyer, &0);
+    // Initiate dispute first time
+    client.dispute_escrow(&escrow_id, &buyer, &0);
+
+    // Try to dispute again - should fail
+    client.dispute_escrow(&escrow_id, &seller, &1);
+}
+
+#[test]
+fn test_propose_resolution_buyer_favors_themselves() {
+    let (env, contract_id, token, token_admin) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let amount = 1000i128;
+    let fee_bps = 400u32;
+    let guarantee_days = 7u32;
+
+    env.mock_all_auths();
+    let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, amount, fee_bps, guarantee_days);
+
+    // Mock auths
+    env.mock_all_auths();
+
+    // Initiate dispute
+    client.dispute_escrow(&escrow_id, &buyer, &0);
+
+    // Buyer proposes resolution favoring themselves
+    client.propose_resolution(&escrow_id, &buyer, &1, &true);
+
+    // Verify proposal was stored
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.buyer_proposal, Some(true));
+}
+
+#[test]
+fn test_propose_resolution_both_agree_on_refund() {
+    let (env, contract_id, token, token_admin) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let amount = 1000i128;
+    let fee_bps = 400u32;
+    let guarantee_days = 7u32;
+
+    env.mock_all_auths();
+    let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, amount, fee_bps, guarantee_days);
+
+    // Mock auths
+    env.mock_all_auths();
+
+    // Initiate dispute
+    client.dispute_escrow(&escrow_id, &buyer, &0);
+
+    // Both parties propose refund (favor_buyer = true)
+    client.propose_resolution(&escrow_id, &buyer, &1, &true);
+    client.propose_resolution(&escrow_id, &seller, &0, &true);
+
+    // Resolve dispute
+    client.resolve_dispute(&escrow_id, &buyer, &2);
+
+    // Verify escrow was refunded
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.status, EscrowStatus::Refunded);
+}
+
+#[test]
+fn test_propose_resolution_both_agree_on_release() {
+    let (env, contract_id, token, token_admin) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let amount = 1000i128;
+    let fee_bps = 400u32;
+    let guarantee_days = 7u32;
+
+    env.mock_all_auths();
+    let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, amount, fee_bps, guarantee_days);
+
+    // Mock auths
+    env.mock_all_auths();
+
+    // Initiate dispute
+    client.dispute_escrow(&escrow_id, &buyer, &0);
+
+    // Both parties propose release (favor_buyer = false)
+    client.propose_resolution(&escrow_id, &buyer, &1, &false);
+    client.propose_resolution(&escrow_id, &seller, &0, &false);
+
+    // Resolve dispute
+    client.resolve_dispute(&escrow_id, &seller, &1);
+
+    // Verify escrow was released
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.status, EscrowStatus::Released);
+}
+
+#[test]
+#[should_panic(expected = "BothPartiesMustAgree")]
+fn test_resolve_dispute_parties_disagree() {
+    let (env, contract_id, token, token_admin) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let amount = 1000i128;
+    let fee_bps = 400u32;
+    let guarantee_days = 7u32;
+
+    env.mock_all_auths();
+    let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, amount, fee_bps, guarantee_days);
+
+    // Mock auths
+    env.mock_all_auths();
+
+    // Initiate dispute
+    client.dispute_escrow(&escrow_id, &buyer, &0);
+
+    // Parties disagree: buyer wants refund, seller wants release
+    client.propose_resolution(&escrow_id, &buyer, &1, &true);
+    client.propose_resolution(&escrow_id, &seller, &0, &false);
+
+    // Try to resolve - should fail
+    client.resolve_dispute(&escrow_id, &buyer, &2);
+}
+
+#[test]
+fn test_admin_resolve_dispute_when_parties_disagree() {
+    let (env, contract_id, token, token_admin) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let amount = 1000i128;
+    let fee_bps = 400u32;
+    let guarantee_days = 7u32;
+
+    env.mock_all_auths();
+    let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, amount, fee_bps, guarantee_days);
+
+    // Mock auths
+    env.mock_all_auths();
+
+    // Initiate dispute
+    client.dispute_escrow(&escrow_id, &buyer, &0);
+
+    // Parties disagree: buyer wants refund, seller wants release
+    client.propose_resolution(&escrow_id, &buyer, &1, &true);
+    client.propose_resolution(&escrow_id, &seller, &0, &false);
+
+    // Admin resolves in favor of seller
+    client.admin_resolve_dispute(&escrow_id, &false, &0);
+
+    // Verify escrow was released
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.status, EscrowStatus::Released);
+}
+
+#[test]
+#[should_panic(expected = "NoDisputeToResolve")]
+fn test_resolve_dispute_before_both_proposed() {
+    let (env, contract_id, token, token_admin) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let amount = 1000i128;
+    let fee_bps = 400u32;
+    let guarantee_days = 7u32;
+
+    env.mock_all_auths();
+    let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, amount, fee_bps, guarantee_days);
+
+    // Mock auths
+    env.mock_all_auths();
+
+    // Initiate dispute
+    client.dispute_escrow(&escrow_id, &buyer, &0);
+
+    // Only buyer proposes
+    client.propose_resolution(&escrow_id, &buyer, &1, &true);
+
+    // Try to resolve before both parties propose - should fail
+    client.resolve_dispute(&escrow_id, &buyer, &2);
+}
+
+#[test]
+#[should_panic(expected = "Unauthorized")]
+fn test_dispute_by_unauthorized_party() {
+    let (env, contract_id, token, token_admin) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let third_party = Address::generate(&env);
+    let amount = 1000i128;
+    let fee_bps = 400u32;
+    let guarantee_days = 7u32;
+
+    env.mock_all_auths();
+    let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, amount, fee_bps, guarantee_days);
+
+    // Mock auths
+    env.mock_all_auths();
+
+    // Third party tries to initiate dispute - should fail
+    client.dispute_escrow(&escrow_id, &third_party, &0);
+}
+
+#[test]
+fn test_escrow_status_enum_includes_disputed() {
+    // Verify EscrowStatus enum includes Disputed
+    let status = EscrowStatus::Disputed;
+    assert_eq!(status, EscrowStatus::Disputed);
 }
