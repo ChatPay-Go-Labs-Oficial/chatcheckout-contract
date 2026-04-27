@@ -22,12 +22,17 @@ pub enum EscrowStatus {
     Disputed,
 }
 
+/// Maximum number of tokens in the allowed list
+pub const MAX_ALLOWED_TOKENS: u32 = 50;
+
 /// Contract configuration
 #[derive(Clone)]
 #[contracttype]
 pub struct Config {
     pub admin: Address,
     pub collect_on_create: bool, // true: collect on create; false: collect on release
+    /// Maximum fee basis points allowed when creating an escrow (0-10000)
+    pub max_fee_bps: u32,
 }
 
 /// Escrow data record
@@ -107,14 +112,16 @@ pub fn write_counter(env: &Env, value: u64) {
 /// Read the current nonce for a user (for replay protection in meta-transactions)
 pub fn read_nonce(env: &Env, user: &Address) -> u64 {
     env.storage()
-        .instance()
+        .persistent()
         .get(&DataKey::Nonce(user.clone()))
         .unwrap_or(0u64)
 }
 
 /// Write the nonce for a user
 pub fn write_nonce(env: &Env, user: &Address, nonce: u64) {
-    env.storage().instance().set(&DataKey::Nonce(user.clone()), &nonce);
+    let key = DataKey::Nonce(user.clone());
+    env.storage().persistent().set(&key, &nonce);
+    env.storage().persistent().extend_ttl(&key, 100, 518_400);
 }
 
 /// Increment and return the previous nonce for a user
@@ -151,12 +158,17 @@ pub fn is_token_allowed(env: &Env, token: &Address) -> bool {
 }
 
 /// Add a token to the allowed list
-pub fn add_allowed_token(env: &Env, token: &Address) {
+pub fn add_allowed_token(env: &Env, token: &Address) -> Result<(), crate::error::EscrowError> {
     let mut allowed = read_allowed_tokens(env);
-    if !allowed.iter().any(|t| t == *token) {
-        allowed.push_back(token.clone());
+    if allowed.iter().any(|t| t == *token) {
+        return Ok(());
     }
+    if allowed.len() >= MAX_ALLOWED_TOKENS {
+        return Err(crate::error::EscrowError::TokenLimitReached);
+    }
+    allowed.push_back(token.clone());
     write_allowed_tokens(env, &allowed);
+    Ok(())
 }
 
 /// Remove a token from the allowed list

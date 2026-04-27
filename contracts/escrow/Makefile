@@ -9,6 +9,18 @@ build:
 	stellar contract build
 	@ls -l target/wasm32v1-none/release/*.wasm
 
+# Build an optimized binary for mainnet deployment with the contractspecv0
+# metadata section stripped. The spec is only needed for CLI tooling (typed
+# invocation, `stellar contract info`); the contract executes identically
+# without it. This reduces the upload fee significantly on mainnet.
+build-mainnet:
+	stellar contract build --optimize
+	python3 ../../scripts/strip_spec.py \
+		../../target/wasm32v1-none/release/escrow.wasm \
+		../../target/wasm32v1-none/release/escrow_mainnet.wasm
+	@echo ""
+	@ls -l ../../target/wasm32v1-none/release/escrow*.wasm
+
 fmt:
 	cargo fmt --all
 

@@ -11,13 +11,13 @@ fn advance_time(env: &Env, days: u64) {
 
     env.ledger().set(LedgerInfo {
         timestamp: new_timestamp,
-        protocol_version: 22, // Updated for compatible version with host
-        sequence_number: 1234,
+        protocol_version: 25,
+        sequence_number: env.ledger().sequence() + (days as u32 * 17_280),
         network_id: Default::default(),
         base_reserve: 0,
-        min_persistent_entry_ttl: 0,
-        min_temp_entry_ttl: 0,
-        max_entry_ttl: 0,
+        min_persistent_entry_ttl: 4_096,
+        min_temp_entry_ttl: 16,
+        max_entry_ttl: 6_312_000, // ~1 year in ledgers
     });
 }
 
@@ -63,6 +63,7 @@ fn test_config_struct_refactored() {
     let cfg = Config {
         admin: admin.clone(),
         collect_on_create: true,
+        max_fee_bps: 500,
     };
 
     // If it compiles, it's correct
@@ -125,13 +126,17 @@ fn setup_contract_with_token() -> (Env, Address, soroban_sdk::token::StellarAsse
 
     let admin = Address::generate(&env);
 
-    // Register SAC (Stellar Asset Contract)
-    let _sac_contract = env.register_stellar_asset_contract_v2(admin.clone());
-    // Token contract address is same as admin for SAC
-    let token = soroban_sdk::token::StellarAssetClient::new(&env, &admin);
+    // Register SAC and get its contract address (distinct from the admin/issuer address)
+    let sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let token_addr = sac.address();
+    let token = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
 
     // Register escrow contract - __constructor will be called automatically
-    let contract_id = env.register(EscrowContract, (&admin, &false));
+    let contract_id = env.register(EscrowContract, (&admin, &false, &500u32));
+
+    // Allow the test token so escrows can be created with it
+    let client = EscrowContractClient::new(&env, &contract_id);
+    client.add_allowed_token(&token_addr);
 
     (env, contract_id, token, admin)
 }
@@ -231,7 +236,7 @@ fn test_release_payment_with_early_release_allowed() {
 }
 
 #[test]
-#[should_panic(expected = "GuaranteePeriodNotExpired")]
+#[should_panic(expected = "Error(Contract, #10)")]
 fn test_release_payment_blocked_without_early_release() {
     let (env, contract_id, token, token_admin) = setup_contract_with_token();
     let client = EscrowContractClient::new(&env, &contract_id);
@@ -327,7 +332,7 @@ fn test_dispute_escrow_by_buyer() {
 
 #[test]
 fn test_dispute_escrow_by_seller() {
-    let (env, contract_id, token, token_admin) = setup_contract_with_token();
+    let (env, contract_id, token, _token_admin) = setup_contract_with_token();
     let client = EscrowContractClient::new(&env, &contract_id);
 
     let buyer = Address::generate(&env);
@@ -339,19 +344,59 @@ fn test_dispute_escrow_by_seller() {
     env.mock_all_auths();
     let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, amount, fee_bps, guarantee_days);
 
-    // Mock auths and initiate dispute
+    // Advance past the guarantee period so the seller is allowed to dispute
+    advance_time(&env, (guarantee_days as u64) + 1);
+
     env.mock_all_auths();
     client.dispute_escrow(&escrow_id, &seller, &0);
 
-    // Verify status changed to Disputed
     let escrow = client.get_escrow(&escrow_id);
     assert_eq!(escrow.status, EscrowStatus::Disputed);
 }
 
 #[test]
-#[should_panic(expected = "AlreadyDisputed")]
+#[should_panic(expected = "Error(Contract, #25)")]
+fn test_dispute_escrow_by_seller_during_guarantee_period_is_blocked() {
+    let (env, contract_id, token, _token_admin) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+
+    env.mock_all_auths();
+    let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, 1000, 400, 7);
+
+    // Seller tries to dispute immediately (guarantee period still active) — must be rejected
+    env.mock_all_auths();
+    client.dispute_escrow(&escrow_id, &seller, &0);
+}
+
+#[test]
+fn test_admin_resolve_dispute_without_proposals() {
+    // Admin can resolve even when neither party has submitted a proposal
+    let (env, contract_id, token, _token_admin) = setup_contract_with_token();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+
+    env.mock_all_auths();
+    let escrow_id = create_test_escrow(&env, &contract_id, &token, &buyer, &seller, 1000, 400, 7);
+
+    env.mock_all_auths();
+    client.dispute_escrow(&escrow_id, &buyer, &0);
+
+    // Admin resolves with no proposals from either party
+    client.admin_resolve_dispute(&escrow_id, &true, &0);
+
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.status, EscrowStatus::Refunded);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #20)")]
 fn test_dispute_escrow_already_disputed() {
-    let (env, contract_id, token, token_admin) = setup_contract_with_token();
+    let (env, contract_id, token, _token_admin) = setup_contract_with_token();
     let client = EscrowContractClient::new(&env, &contract_id);
 
     let buyer = Address::generate(&env);
@@ -369,8 +414,8 @@ fn test_dispute_escrow_already_disputed() {
     // Initiate dispute first time
     client.dispute_escrow(&escrow_id, &buyer, &0);
 
-    // Try to dispute again - should fail
-    client.dispute_escrow(&escrow_id, &seller, &1);
+    // Try to dispute again - should fail (status is already Disputed, regardless of who calls)
+    client.dispute_escrow(&escrow_id, &buyer, &1);
 }
 
 #[test]
@@ -466,7 +511,7 @@ fn test_propose_resolution_both_agree_on_release() {
 }
 
 #[test]
-#[should_panic(expected = "BothPartiesMustAgree")]
+#[should_panic(expected = "Error(Contract, #23)")]
 fn test_resolve_dispute_parties_disagree() {
     let (env, contract_id, token, token_admin) = setup_contract_with_token();
     let client = EscrowContractClient::new(&env, &contract_id);
@@ -527,7 +572,7 @@ fn test_admin_resolve_dispute_when_parties_disagree() {
 }
 
 #[test]
-#[should_panic(expected = "NoDisputeToResolve")]
+#[should_panic(expected = "Error(Contract, #21)")]
 fn test_resolve_dispute_before_both_proposed() {
     let (env, contract_id, token, token_admin) = setup_contract_with_token();
     let client = EscrowContractClient::new(&env, &contract_id);
@@ -555,7 +600,7 @@ fn test_resolve_dispute_before_both_proposed() {
 }
 
 #[test]
-#[should_panic(expected = "Unauthorized")]
+#[should_panic(expected = "Error(Contract, #3)")]
 fn test_dispute_by_unauthorized_party() {
     let (env, contract_id, token, token_admin) = setup_contract_with_token();
     let client = EscrowContractClient::new(&env, &contract_id);

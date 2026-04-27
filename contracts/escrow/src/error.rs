@@ -76,4 +76,13 @@ pub enum EscrowError {
 
     /// Party has already proposed resolution
     AlreadyProposed = 24,
+
+    /// Seller cannot initiate a dispute during the buyer's guarantee period
+    DisputeNotAllowed = 25,
+
+    /// Buyer and seller cannot be the same address
+    InvalidSeller = 26,
+
+    /// Allowed token list is at its maximum capacity
+    TokenLimitReached = 27,
 }

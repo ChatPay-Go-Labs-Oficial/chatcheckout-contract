@@ -34,6 +34,8 @@ pub struct RequestRefundEvent {
     pub escrow_id: u64,
     pub buyer: Address,
     pub amount: i128,
+    pub fee: i128,
+    pub to_buyer: i128,
     pub asset: Address,
 }
 
