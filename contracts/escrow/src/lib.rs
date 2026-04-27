@@ -4,11 +4,13 @@
 mod error;
 mod events;
 mod math;
+mod signature;
 mod storage;
 mod validation;
 
+use crate::error::EscrowError;
 use crate::events::*;
-use soroban_sdk::{contract, contractimpl, vec, Address, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
 
 // Re-export commonly used types from storage module
 pub use storage::{Config, EscrowData, EscrowStatus};
@@ -18,38 +20,114 @@ pub struct EscrowContract;
 
 #[contractimpl]
 impl EscrowContract {
-    /// Inicializa a configuração do contrato
-    /// Somente pode ser chamado 1x no deploy (ou quando vazio).
-    pub fn __constructor(env: &Env, admin: Address, collect_on_create: bool) {
+    /// Initialize contract configuration
+    /// Can only be called once on deploy (or when empty).
+    pub fn __constructor(env: &Env, admin: Address, collect_on_create: bool, max_fee_bps: u32) -> Result<(), EscrowError> {
         if env.storage().instance().has(&storage::DataKey::Config) {
-            panic!("Already initialized");
+            return Err(EscrowError::AlreadyInitialized);
         }
         admin.require_auth();
+
+        validation::validate_fee_bps_range(max_fee_bps)?;
 
         let cfg = storage::Config {
             admin: admin.clone(),
             collect_on_create,
+            max_fee_bps,
         };
         storage::write_config(env, &cfg);
+        Ok(())
     }
 
-    /// Atualiza a configuração (somente admin atual)
-    pub fn update_config(env: Env, new_admin: Address, collect_on_create: bool) {
+    /// Update configuration (only current admin)
+    pub fn update_config(env: Env, new_admin: Address, collect_on_create: bool, max_fee_bps: u32) -> Result<(), EscrowError> {
         let cfg = storage::read_config(&env);
-        cfg.admin.require_auth(); // admin atual autoriza
+        cfg.admin.require_auth();
+
+        validation::validate_fee_bps_range(max_fee_bps)?;
+
+        // Extend instance storage TTL (Config is critical data)
+        env.storage().instance().extend_ttl(100, 518_400);
 
         let new_cfg = storage::Config {
             admin: new_admin,
             collect_on_create,
+            max_fee_bps,
         };
         storage::write_config(&env, &new_cfg);
+        Ok(())
     }
 
     pub fn get_config(env: Env) -> storage::Config {
         storage::read_config(&env)
     }
 
-    /// Cria escrow com período de garantia
+    /// Withdraw funds from the contract (admin only)
+    pub fn admin_withdraw(env: Env, asset: Address, amount: i128) -> Result<(), EscrowError> {
+        let cfg = storage::read_config(&env);
+        cfg.admin.require_auth();
+
+        validation::validate_amount_positive(amount)?;
+
+        let token = soroban_sdk::token::Client::new(&env, &asset);
+        token.transfer(&env.current_contract_address(), &cfg.admin, &amount);
+
+        AdminWithdrawEvent {
+            admin: cfg.admin,
+            asset,
+            amount,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    // ============================================================================
+    // Token Allowlist Management (Admin Only)
+    // ============================================================================
+
+    /// Add a token to the allowed list (admin only)
+    /// This ensures only trusted tokens can be used in escrows
+    pub fn add_allowed_token(env: Env, token: Address) -> Result<(), EscrowError> {
+        let cfg = storage::read_config(&env);
+        cfg.admin.require_auth();
+
+        // Extend instance storage TTL
+        env.storage().instance().extend_ttl(100, 518_400);
+
+        storage::add_allowed_token(&env, &token)?;
+
+        // Emit event: token added to allowlist
+        TokenAddedEvent { token }.publish(&env);
+        Ok(())
+    }
+
+    /// Remove a token from the allowed list (admin only)
+    /// Note: Existing escrows with this token will still function
+    pub fn remove_allowed_token(env: Env, token: Address) {
+        let cfg = storage::read_config(&env);
+        cfg.admin.require_auth();
+
+        // Extend instance storage TTL
+        env.storage().instance().extend_ttl(100, 518_400);
+
+        storage::remove_allowed_token(&env, &token);
+
+        // Emit event: token removed from allowlist
+        TokenRemovedEvent { token }.publish(&env);
+    }
+
+    /// Get the list of allowed tokens (public)
+    pub fn get_allowed_tokens(env: Env) -> Vec<Address> {
+        storage::read_allowed_tokens(&env)
+    }
+
+    /// Check if a token is allowed (public helper function)
+    pub fn is_token_allowed(env: Env, token: Address) -> bool {
+        storage::is_token_allowed(&env, &token)
+    }
+
+    /// Create escrow with guarantee period
     pub fn create_escrow(
         env: Env,
         buyer: Address,
@@ -59,37 +137,53 @@ impl EscrowContract {
         fee_bps: u32,
         guarantee_days: u32,
         product_id: String,
-    ) -> u64 {
-        // Require buyer authorization (necessário para transferências a partir dele)
+        allow_early_release: bool,
+    ) -> Result<u64, EscrowError> {
+        // Require buyer authorization (required for transfers from them)
         buyer.require_auth();
 
+        // Extend instance storage TTL (Counter and Config are critical data)
+        env.storage().instance().extend_ttl(100, 518_400);
+
         // Input validation
-        validation::validate_create_escrow_params(amount, fee_bps, guarantee_days, &product_id)
-            .unwrap();
+        validation::validate_create_escrow_params(amount, fee_bps, guarantee_days, &product_id)?;
+        validation::validate_buyer_not_seller(&buyer, &seller)?;
+
+        // Validate token is in allowed list
+        validation::validate_token_allowed(&env, &asset)?;
 
         let now = env.ledger().timestamp();
         let release_time = math::calc_release_timestamp(now, guarantee_days);
 
-        // ID sequencial
+        // Sequential ID
         let counter = storage::read_counter(&env);
-        let escrow_id = counter
-            .checked_add(1)
-            .unwrap_or_else(|| panic!("Counter overflow"));
+        let escrow_id = counter.checked_add(1).ok_or(EscrowError::CounterOverflow)?;
 
-        // Calcular taxa usando o fee_bps recebido como parâmetro (do backend)
+        // Calculate fee using fee_bps received as parameter (from backend)
         let cfg = storage::read_config(&env);
+
+        // Enforce that the supplied fee does not exceed the on-chain configured maximum
+        validation::validate_fee_bps_within_limit(fee_bps, cfg.max_fee_bps)?;
+
         let fee = math::calc_fee(amount, fee_bps);
 
-        // 1) Transferir o valor do comprador para o contrato (valor que ficará em custódia)
+        // Prevent fee configurations that would permanently lock escrowed funds:
+        // when collect_on_create=false, fee is deducted at release time, so it
+        // must be strictly less than the escrowed amount.
+        if !cfg.collect_on_create && fee > 0 {
+            validation::validate_fee_not_exceeds_amount(amount, fee)?;
+        }
+
+        // 1) Transfer buyer's amount to contract (amount held in custody)
         let token = soroban_sdk::token::Client::new(&env, &asset);
         token.transfer(&buyer, &env.current_contract_address(), &amount);
 
-        // 2) Se configurado para cobrar a taxa no create: transferir do comprador para o admin
+        // 2) If configured to collect fee on create: transfer from buyer to admin
         if cfg.collect_on_create && fee > 0 {
             token.transfer(&buyer, &cfg.admin, &fee);
         }
 
-        // Persistir escrow
+        // Persist escrow
         let escrow = EscrowData {
             buyer: buyer.clone(),
             seller: seller.clone(),
@@ -100,17 +194,19 @@ impl EscrowContract {
             status: EscrowStatus::Active,
             product_id: product_id.clone(),
             guarantee_days,
-
-            fee_bps, // usa o fee_bps recebido como parâmetro
-
-            // Dispute tracking fields (initialized)
-            disputed_by_buyer: false,
-            buyer_resolution: 0u32,
-            seller_resolution: 0u32,
+            fee_bps,
+            allow_early_release,
+            buyer_proposal: None,
+            seller_proposal: None,
         };
 
         storage::write_escrow(&env, escrow_id, &escrow);
         storage::write_counter(&env, escrow_id);
+
+        // Extend persistent storage TTL to cover the full guarantee period plus a 30-day buffer.
+        // Approximation: 1 ledger ≈ 5 seconds → 17,280 ledgers/day; 518,400 ≈ 30 days buffer.
+        let guarantee_ledgers = ((guarantee_days as u64 * 17_280) + 518_400).min(u32::MAX as u64) as u32;
+        env.storage().persistent().extend_ttl(&storage::DataKey::Escrow(escrow_id), 100, guarantee_ledgers);
 
         // Emit event: escrow created
         CreateEscrowEvent {
@@ -122,51 +218,87 @@ impl EscrowContract {
             fee_bps,
             guarantee_days,
             product_id,
+            allow_early_release,
         }
         .publish(&env);
 
-        escrow_id
+        Ok(escrow_id)
     }
 
-    pub fn get_escrow(env: Env, escrow_id: u64) -> EscrowData {
+    pub fn get_escrow(env: Env, escrow_id: u64) -> Result<EscrowData, EscrowError> {
         storage::read_escrow(&env, escrow_id)
     }
 
-    /// Libera pagamento para o seller (após garantia ou pelo seller)
-    pub fn release_payment(env: Env, escrow_id: u64) {
-        let mut esc = storage::read_escrow(&env, escrow_id);
-
-        // Check escrow status
-        validation::validate_escrow_active(esc.status.clone()).unwrap();
-
+    /// Extend the TTL of an escrow's storage entry so it remains accessible.
+    /// Anyone can call this — it performs no state change beyond keeping the record alive.
+    /// Necessary for escrows with long guarantee periods that may outlive a single TTL window.
+    pub fn bump_escrow(env: Env, escrow_id: u64) -> Result<(), EscrowError> {
+        let esc = storage::read_escrow(&env, escrow_id)?;
         let now = env.ledger().timestamp();
-        let is_expired = math::is_expired(now, esc.release_at);
+        let remaining_secs = esc.release_at.saturating_sub(now);
+        // 1 ledger ≈ 5 seconds; add 30-day buffer; cap at u32::MAX
+        let ttl = ((remaining_secs / 5) + 518_400).min(u32::MAX as u64) as u32;
+        env.storage()
+            .persistent()
+            .extend_ttl(&storage::DataKey::Escrow(escrow_id), ttl, ttl);
+        Ok(())
+    }
 
-        // Authorization check: seller can release anytime (before or after guarantee period expires)
-        // After guarantee period expires, payment can be released automatically (by anyone)
-        if !is_expired {
-            // Before guarantee period expires, only seller can release
-            esc.seller.require_auth();
+    // ============================================================================
+    // Nonce Management
+    // ============================================================================
+
+    /// Get current nonce for a user
+    /// Used to get the current nonce before calling functions that require it
+    pub fn get_nonce(env: Env, user: Address) -> u64 {
+        storage::read_nonce(&env, &user)
+    }
+
+    // ============================================================================
+    // Escrow Operations
+    // ============================================================================
+
+    /// Release payment to seller (after guarantee period or by seller)
+    /// Includes nonce for replay attack protection and traceability
+    pub fn release_payment(env: Env, escrow_id: u64, seller: Address, nonce: u64) -> Result<(), EscrowError> {
+        // 1. Verify nonce for replay protection
+        signature::verify_and_increment_nonce(&env, &seller, nonce)?;
+
+        // 2. Verify seller's authorization using Soroban native auth
+        seller.require_auth();
+
+        // 3. Get and validate escrow (read before extend_ttl to avoid aborting on missing key)
+        let mut esc = storage::read_escrow(&env, escrow_id)?;
+        env.storage().persistent().extend_ttl(&storage::DataKey::Escrow(escrow_id), 100, 518_400);
+        validation::validate_escrow_active(esc.status.clone())?;
+
+        // 4. Verify signer is the seller
+        if esc.seller != seller {
+            return Err(EscrowError::Unauthorized);
         }
 
-        // Se a taxa NÃO foi cobrada no create, cobra agora no release
+        // 5. Check guarantee period has expired OR early release is allowed
+        if esc.allow_early_release {
+            // Seller can release anytime if buyer agreed to early release
+        } else {
+            // Seller must wait for guarantee period to expire
+            validation::validate_guarantee_period_expired(esc.release_at, &env)?;
+        }
+
+        // 6. Process fee and payment (same as original)
         let token = soroban_sdk::token::Client::new(&env, &esc.asset);
         let cfg = storage::read_config(&env);
         let mut to_seller = esc.amount;
-
-        // Calculate fee for event emission
         let fee = math::calc_fee(esc.amount, esc.fee_bps);
 
         if !cfg.collect_on_create {
             if fee > 0 {
-                validation::validate_fee_not_exceeds_amount(esc.amount, fee).unwrap();
-                // taxa do contrato para o admin
+                validation::validate_fee_not_exceeds_amount(esc.amount, fee)?;
                 token.transfer(&env.current_contract_address(), &cfg.admin, &fee);
-                to_seller = esc.amount.checked_sub(fee).expect("Fee exceeds amount");
+                to_seller = esc.amount.checked_sub(fee).ok_or(EscrowError::FeeExceedsAmount)?;
             }
         }
 
-        // Paga o seller
         token.transfer(
             &env.current_contract_address(),
             &esc.seller.clone(),
@@ -176,231 +308,270 @@ impl EscrowContract {
         esc.status = EscrowStatus::Released;
         storage::write_escrow(&env, escrow_id, &esc);
 
-        // Emit event: payment released
         ReleasePaymentEvent {
             escrow_id,
-            seller: esc.seller.clone(),
+            seller: esc.seller,
             amount: esc.amount,
             fee,
             to_seller,
         }
         .publish(&env);
+
+        Ok(())
     }
 
-    /// Reembolso (apenas buyer e dentro do período de garantia)
-    pub fn request_refund(env: Env, escrow_id: u64) {
-        let mut esc = storage::read_escrow(&env, escrow_id);
+    /// Refund (only buyer and within guarantee period)
+    /// Includes nonce for replay attack protection and traceability
+    pub fn request_refund(env: Env, escrow_id: u64, buyer: Address, nonce: u64) -> Result<(), EscrowError> {
+        // 1. Verify nonce for replay protection
+        signature::verify_and_increment_nonce(&env, &buyer, nonce)?;
 
-        // Apenas buyer
-        esc.buyer.require_auth();
+        // 2. Verify buyer's authorization using Soroban native auth
+        buyer.require_auth();
 
-        // Check escrow status
-        validation::validate_escrow_active(esc.status.clone()).unwrap();
+        // 3. Get and validate escrow (read before extend_ttl to avoid aborting on missing key)
+        let mut esc = storage::read_escrow(&env, escrow_id)?;
+        env.storage().persistent().extend_ttl(&storage::DataKey::Escrow(escrow_id), 100, 518_400);
 
-        // Validate refund window
-        validation::validate_refund_window(&esc, &env).unwrap();
+        // 4. Verify signer is the buyer
+        if esc.buyer != buyer {
+            return Err(EscrowError::Unauthorized);
+        }
 
-        // Devolve tudo que está em custódia (a taxa cobrada no create, se houver, não é reembolsada)
+        // 5. Check escrow status
+        validation::validate_escrow_active(esc.status.clone())?;
+
+        // 6. Validate refund window
+        validation::validate_refund_window(&esc, &env)?;
+
+        // 7. Process refund — deduct fee if not already collected at creation
         let token = soroban_sdk::token::Client::new(&env, &esc.asset);
-        token.transfer(&env.current_contract_address(), &esc.buyer, &esc.amount);
+        let cfg = storage::read_config(&env);
+        let mut to_buyer = esc.amount;
+        let fee = math::calc_fee(esc.amount, esc.fee_bps);
+
+        if !cfg.collect_on_create && fee > 0 {
+            validation::validate_fee_not_exceeds_amount(esc.amount, fee)?;
+            token.transfer(&env.current_contract_address(), &cfg.admin, &fee);
+            to_buyer = esc.amount.checked_sub(fee).ok_or(EscrowError::FeeExceedsAmount)?;
+        }
+
+        token.transfer(&env.current_contract_address(), &esc.buyer, &to_buyer);
 
         esc.status = EscrowStatus::Refunded;
         storage::write_escrow(&env, escrow_id, &esc);
 
-        // Emit event: refund requested
         RequestRefundEvent {
             escrow_id,
             buyer: esc.buyer.clone(),
             amount: esc.amount,
+            fee,
+            to_buyer,
             asset: esc.asset.clone(),
         }
         .publish(&env);
+
+        Ok(())
     }
 
-    /// Lista todos os escrows de um seller
-    pub fn get_seller_escrows(env: Env, seller: Address) -> Vec<u64> {
-        let counter = storage::read_counter(&env);
-        let mut result = vec![&env];
+    // ============================================================================
+    // Dispute Resolution
+    // ============================================================================
 
-        for i in 1..=counter {
-            if storage::has_escrow(&env, i) {
-                let esc = storage::read_escrow(&env, i);
-                if esc.seller == seller {
-                    result.push_back(i);
-                }
-            }
-        }
-        result
-    }
+    /// Initiate a dispute on an active escrow
+    pub fn dispute_escrow(
+        env: Env,
+        escrow_id: u64,
+        caller: Address,
+        nonce: u64,
+    ) -> Result<(), EscrowError> {
+        signature::verify_and_increment_nonce(&env, &caller, nonce)?;
+        caller.require_auth();
 
-    /// Marca como disputado
-    pub fn dispute_escrow(env: Env, escrow_id: u64, as_buyer: bool) {
-        let mut esc = storage::read_escrow(&env, escrow_id);
+        // Read before extend_ttl to avoid aborting on a missing/archived key
+        let mut esc = storage::read_escrow(&env, escrow_id)?;
+        env.storage().persistent().extend_ttl(&storage::DataKey::Escrow(escrow_id), 100, 518_400);
 
-        // Check escrow status
-        validation::validate_escrow_active(esc.status.clone()).unwrap();
-
-        // Authorization: require auth from buyer or seller based on parameter
-        if as_buyer {
-            esc.buyer.require_auth();
-        } else {
-            esc.seller.require_auth();
+        if esc.buyer != caller && esc.seller != caller {
+            return Err(EscrowError::Unauthorized);
         }
 
-        // Track who initiated the dispute
-        let disputed_by = if as_buyer {
-            esc.buyer.clone()
-        } else {
-            esc.seller.clone()
-        };
+        // Seller cannot dispute during the buyer's guarantee period
+        if esc.seller == caller {
+            validation::validate_seller_can_dispute(&esc, &env)?;
+        }
 
-        esc.disputed_by_buyer = as_buyer;
+        validation::validate_can_dispute(&esc)?;
+
         esc.status = EscrowStatus::Disputed;
         storage::write_escrow(&env, escrow_id, &esc);
 
-        // Emit event: escrow disputed
         DisputeEscrowEvent {
             escrow_id,
-            disputed_by,
-            as_buyer,
+            initiator: caller,
         }
         .publish(&env);
+
+        Ok(())
     }
 
-    /// Propõe uma resolução para a disputa (buyer ou seller)
-    /// as_buyer: true se está sendo chamado pelo buyer, false se pelo seller
-    /// favor_seller: true = favor seller (liberar pagamento), false = favor buyer (reembolso)
-    pub fn prop_res(
+    /// Propose a resolution for a disputed escrow
+    pub fn propose_resolution(
         env: Env,
         escrow_id: u64,
-        as_buyer: bool,
-        favor_seller: bool,
-    ) {
-        let mut esc = storage::read_escrow(&env, escrow_id);
+        caller: Address,
+        nonce: u64,
+        favor_buyer: bool,
+    ) -> Result<(), EscrowError> {
+        signature::verify_and_increment_nonce(&env, &caller, nonce)?;
+        caller.require_auth();
 
-        // Check escrow status (must be disputed)
-        validation::validate_escrow_disputed(esc.status.clone()).unwrap();
+        // Read before extend_ttl to avoid aborting on a missing/archived key
+        let mut esc = storage::read_escrow(&env, escrow_id)?;
+        env.storage().persistent().extend_ttl(&storage::DataKey::Escrow(escrow_id), 100, 518_400);
 
-        // Convert favor_seller to resolution value: 1 = favor buyer, 2 = favor seller
-        let resolution_value = if favor_seller { 2u32 } else { 1u32 };
+        let is_buyer = esc.buyer == caller;
+        let is_seller = esc.seller == caller;
 
-        // Authorization and record resolution
-        if as_buyer {
-            esc.buyer.require_auth();
+        if !is_buyer && !is_seller {
+            return Err(EscrowError::Unauthorized);
+        }
 
-            // Check if buyer already voted
-            if esc.buyer_resolution != 0 {
-                panic!("Buyer already proposed a resolution");
-            }
+        validation::validate_escrow_disputed(esc.status.clone())?;
 
-            esc.buyer_resolution = resolution_value;
+        if is_buyer {
+            validation::validate_not_yet_proposed(esc.buyer_proposal)?;
+            esc.buyer_proposal = Some(favor_buyer);
         } else {
-            esc.seller.require_auth();
-
-            // Check if seller already voted
-            if esc.seller_resolution != 0 {
-                panic!("Seller already proposed a resolution");
-            }
-
-            esc.seller_resolution = resolution_value;
+            validation::validate_not_yet_proposed(esc.seller_proposal)?;
+            esc.seller_proposal = Some(favor_buyer);
         }
 
         storage::write_escrow(&env, escrow_id, &esc);
-
-        // Emit event: resolution proposed
-        let proposed_by = if as_buyer {
-            esc.buyer.clone()
-        } else {
-            esc.seller.clone()
-        };
 
         ProposeResolutionEvent {
             escrow_id,
-            proposed_by,
-            favor_seller,
+            proposer: caller,
+            favor_buyer,
         }
         .publish(&env);
+
+        Ok(())
     }
 
-    /// Resolve disputa (pode ser chamado por qualquer um após ambas as partes concordarem)
-    pub fn res_disp(env: Env, escrow_id: u64) {
-        let mut esc = storage::read_escrow(&env, escrow_id);
+    /// Resolve a disputed escrow when both parties agree
+    pub fn resolve_dispute(
+        env: Env,
+        escrow_id: u64,
+        caller: Address,
+        nonce: u64,
+    ) -> Result<(), EscrowError> {
+        signature::verify_and_increment_nonce(&env, &caller, nonce)?;
+        caller.require_auth();
 
-        // Check escrow status (must be disputed)
-        validation::validate_escrow_disputed(esc.status.clone()).unwrap();
+        // Read before extend_ttl to avoid aborting on a missing/archived key
+        let mut esc = storage::read_escrow(&env, escrow_id)?;
+        env.storage().persistent().extend_ttl(&storage::DataKey::Escrow(escrow_id), 100, 518_400);
 
-        // Check both parties have proposed resolutions
-        let buyer_vote = esc.buyer_resolution;
-        let seller_vote = esc.seller_resolution;
-
-        // Both must have voted (value != 0)
-        if buyer_vote == 0 || seller_vote == 0 {
-            panic!("Both parties must propose a resolution before resolving");
+        if esc.buyer != caller && esc.seller != caller {
+            return Err(EscrowError::Unauthorized);
         }
 
-        // Check if both agree
-        if buyer_vote != seller_vote {
-            panic!("Both parties must agree on the resolution");
-        }
+        validation::validate_escrow_disputed(esc.status.clone())?;
 
-        // Execute resolution based on agreement
-        let token = soroban_sdk::token::Client::new(&env, &esc.asset);
+        let favor_buyer = validation::validate_dispute_resolution(
+            esc.buyer_proposal,
+            esc.seller_proposal,
+        )?;
 
-        if buyer_vote == 1 {
-            // Both agreed: favor buyer (refund)
-            token.transfer(
-                &env.current_contract_address(),
-                &esc.buyer,
-                &esc.amount,
-            );
+        Self::execute_dispute_resolution(&env, escrow_id, &mut esc, favor_buyer, caller)?;
 
+        Ok(())
+    }
+
+    /// Admin resolves dispute when parties can't agree, or when a party is unresponsive.
+    /// Admin can resolve any disputed escrow unconditionally — no requirement that both
+    /// parties have submitted proposals. This prevents funds from being locked forever
+    /// if one party refuses to engage.
+    pub fn admin_resolve_dispute(
+        env: Env,
+        escrow_id: u64,
+        favor_buyer: bool,
+        nonce: u64,
+    ) -> Result<(), EscrowError> {
+        let cfg = storage::read_config(&env);
+        signature::verify_and_increment_nonce(&env, &cfg.admin, nonce)?;
+        cfg.admin.require_auth();
+
+        // Read before extend_ttl to avoid aborting on a missing/archived key
+        let mut esc = storage::read_escrow(&env, escrow_id)?;
+        env.storage().persistent().extend_ttl(&storage::DataKey::Escrow(escrow_id), 100, 518_400);
+
+        validation::validate_escrow_disputed(esc.status.clone())?;
+
+        Self::execute_dispute_resolution(&env, escrow_id, &mut esc, favor_buyer, cfg.admin)?;
+
+        Ok(())
+    }
+
+    /// Helper function to execute dispute resolution (refund or release)
+    fn execute_dispute_resolution(
+        env: &Env,
+        escrow_id: u64,
+        esc: &mut EscrowData,
+        favor_buyer: bool,
+        resolved_by: Address,
+    ) -> Result<(), EscrowError> {
+        let token = soroban_sdk::token::Client::new(env, &esc.asset);
+        let cfg = storage::read_config(env);
+        let fee = math::calc_fee(esc.amount, esc.fee_bps);
+
+        if favor_buyer {
+            let mut to_buyer = esc.amount;
+
+            if !cfg.collect_on_create && fee > 0 {
+                validation::validate_fee_not_exceeds_amount(esc.amount, fee)?;
+                token.transfer(&env.current_contract_address(), &cfg.admin, &fee);
+                to_buyer = esc.amount.checked_sub(fee).ok_or(EscrowError::FeeExceedsAmount)?;
+            }
+
+            token.transfer(&env.current_contract_address(), &esc.buyer, &to_buyer);
             esc.status = EscrowStatus::Refunded;
 
-            // Emit event: dispute resolved in favor of buyer
             ResolveDisputeEvent {
                 escrow_id,
-                resolved_in_favor_of: esc.buyer.clone(),
+                favor_buyer: true,
                 amount: esc.amount,
-                resolution_type: false, // false = refunded to buyer
+                fee,
+                recipient: esc.buyer.clone(),
+                resolved_by,
             }
-            .publish(&env);
+            .publish(env);
         } else {
-            // Both agreed: favor seller (release payment)
-            let cfg = storage::read_config(&env);
             let mut to_seller = esc.amount;
 
-            // Calculate and collect fee if not collected at creation
-            if !cfg.collect_on_create {
-                let fee = math::calc_fee(esc.amount, esc.fee_bps);
-                if fee > 0 {
-                    token.transfer(
-                        &env.current_contract_address(),
-                        &cfg.admin,
-                        &fee,
-                    );
-                    to_seller = esc.amount.checked_sub(fee).expect("Fee exceeds amount");
-                }
+            if !cfg.collect_on_create && fee > 0 {
+                validation::validate_fee_not_exceeds_amount(esc.amount, fee)?;
+                token.transfer(&env.current_contract_address(), &cfg.admin, &fee);
+                to_seller = esc.amount.checked_sub(fee).ok_or(EscrowError::FeeExceedsAmount)?;
             }
 
-            token.transfer(
-                &env.current_contract_address(),
-                &esc.seller.clone(),
-                &to_seller,
-            );
-
+            token.transfer(&env.current_contract_address(), &esc.seller, &to_seller);
             esc.status = EscrowStatus::Released;
 
-            // Emit event: dispute resolved in favor of seller
             ResolveDisputeEvent {
                 escrow_id,
-                resolved_in_favor_of: esc.seller.clone(),
-                amount: to_seller,
-                resolution_type: true, // true = released to seller
+                favor_buyer: false,
+                amount: esc.amount,
+                fee,
+                recipient: esc.seller.clone(),
+                resolved_by,
             }
-            .publish(&env);
+            .publish(env);
         }
 
-        storage::write_escrow(&env, escrow_id, &esc);
+        storage::write_escrow(env, escrow_id, esc);
+        Ok(())
     }
 }
 

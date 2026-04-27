@@ -1,0 +1,96 @@
+{
+  "generators": {
+    "address": 1,
+    "nonce": 0,
+    "mux_id": 0
+  },
+  "auth": [
+    [],
+    []
+  ],
+  "ledger": {
+    "protocol_version": 25,
+    "sequence_number": 0,
+    "timestamp": 0,
+    "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
+    "base_reserve": 0,
+    "min_persistent_entry_ttl": 4096,
+    "min_temp_entry_ttl": 16,
+    "max_entry_ttl": 6312000,
+    "ledger_entries": [
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": "ledger_key_contract_instance",
+              "durability": "persistent",
+              "val": {
+                "contract_instance": {
+                  "executable": {
+                    "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                  },
+                  "storage": [
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "Signers"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "bytes": "33735a8269e6815d04ab0746bd53e36f1f3f6c4ea9e22315c169e1674ea75c34"
+                          },
+                          {
+                            "bytes": "5d79fafd1c177ae3bcb81ca7a1ea4fb67c4766e8c4da63a7bdb9f02e46154f4b"
+                          },
+                          {
+                            "bytes": "ed12069dad7e0330bcf77be931e7f4e225ac7d1a8cc585fce13af14259e6141c"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "Threshold"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 2
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_code": {
+              "ext": "v0",
+              "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "code": ""
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      }
+    ]
+  },
+  "events": []
+}

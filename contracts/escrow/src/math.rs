@@ -13,8 +13,3 @@ pub fn calc_fee(amount: i128, bps: u32) -> i128 {
 pub fn calc_release_timestamp(current: u64, days: u32) -> u64 {
     current + (days as u64 * 86_400)
 }
-
-/// Check if current time is past release time
-pub fn is_expired(current: u64, release_at: u64) -> bool {
-    current >= release_at
-}

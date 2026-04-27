@@ -41,15 +41,48 @@ pub enum EscrowError {
     /// Fee amount exceeds escrow amount
     FeeExceedsAmount = 12,
 
+    /// Invalid signature for meta-transaction
+    InvalidSignature = 13,
+
+    /// Nonce mismatch - replay attack detected
+    InvalidNonce = 14,
+
+    /// Signature expired
+    SignatureExpired = 15,
+
+    /// Invalid function selector for meta-transaction
+    InvalidFunctionSelector = 16,
+
+    /// Counter overflow (too many escrows)
+    CounterOverflow = 17,
+
+    /// Token not in allowed list
+    TokenNotAllowed = 18,
+
     /// Escrow is not in disputed status
-    EscrowNotDisputed = 13,
+    NotDisputed = 19,
+
+    /// Escrow is already disputed
+    AlreadyDisputed = 20,
+
+    /// No dispute to resolve (no proposals exist)
+    NoDisputeToResolve = 21,
 
     /// Dispute already resolved
-    DisputeAlreadyResolved = 14,
+    DisputeAlreadyResolved = 22,
 
     /// Both parties must agree on resolution
-    BothPartiesMustAgree = 15,
+    BothPartiesMustAgree = 23,
 
-    /// Cannot resolve own dispute
-    CannotResolveOwnDispute = 16,
+    /// Party has already proposed resolution
+    AlreadyProposed = 24,
+
+    /// Seller cannot initiate a dispute during the buyer's guarantee period
+    DisputeNotAllowed = 25,
+
+    /// Buyer and seller cannot be the same address
+    InvalidSeller = 26,
+
+    /// Allowed token list is at its maximum capacity
+    TokenLimitReached = 27,
 }
