@@ -43,6 +43,8 @@ impl MultisigContract {
             return Err(MultisigError::AlreadyInitialized);
         }
         Self::_validate_and_store_signers(&env, &signers, threshold)?;
+        // TTL is set to the network default on creation.
+        // Call bump() after deploy to extend it.
         Ok(())
     }
 
@@ -154,7 +156,9 @@ impl MultisigContract {
 
         write_signers(env, signers);
         write_threshold(env, threshold);
-        Self::_extend_ttl(env);
+        // NOTE: extend_ttl is intentionally NOT called here — this helper is
+        // invoked by __constructor where the instance entry is still being
+        // created and extend_ttl would trap with InvalidAction.
         Ok(())
     }
 

@@ -16,7 +16,7 @@
               "function_name": "add_signer",
               "args": [
                 {
-                  "bytes": "1a08e465d035868ad7ae5eaba19c5e4817c5d531e225438366b4d1dae9f92908"
+                  "bytes": "01500b63445dcc18b8cc779b56319d099ec2cbb300c050b4182bfb41f787f8cd"
                 }
               ]
             }
@@ -63,10 +63,10 @@
                       "val": {
                         "vec": [
                           {
-                            "bytes": "5370fe7be9a1dd2b6421fc2fa06f795ee134e7cf43650eca27092d91c26df9bb"
+                            "bytes": "aa6ad880c53b4f595aa093192f1965a3a615ea9a1aad7877410d9519de662762"
                           },
                           {
-                            "bytes": "1a08e465d035868ad7ae5eaba19c5e4817c5d531e225438366b4d1dae9f92908"
+                            "bytes": "01500b63445dcc18b8cc779b56319d099ec2cbb300c050b4182bfb41f787f8cd"
                           }
                         ]
                       }

@@ -44,7 +44,7 @@
                       "val": {
                         "vec": [
                           {
-                            "bytes": "a19298f8a1db478c81fad19d3b59446115b6dfaa228f7a607c0cfadc53333e92"
+                            "bytes": "eac39864b0efdb70416f6044a7db85d2d26e362d9206cb67b6ddfc1dbf07da6a"
                           }
                         ]
                       }
@@ -68,7 +68,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 518400
+        "live_until": 4095
       },
       {
         "entry": {
@@ -82,7 +82,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 518400
+        "live_until": 4095
       }
     ]
   },

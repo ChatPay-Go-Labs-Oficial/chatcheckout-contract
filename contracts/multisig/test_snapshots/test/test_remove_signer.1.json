@@ -16,7 +16,7 @@
               "function_name": "remove_signer",
               "args": [
                 {
-                  "bytes": "228c31baaf7ba022e91e903f7f2460ec9763a176ffec64c5eb67682790e57088"
+                  "bytes": "4f802e82ff7e2e3ba256da4b011d17ea47e389ff3b8c07532ee0c6c619ef504f"
                 }
               ]
             }
@@ -63,7 +63,7 @@
                       "val": {
                         "vec": [
                           {
-                            "bytes": "2339e2c7369cb7295a7aee98a05a2cdb25c71f184a9767d0f229c1d4da040dce"
+                            "bytes": "3b4b943a8e9241b6382f1bb830bd3b4a5694c01fff98a078ac9a029c878d9c4c"
                           }
                         ]
                       }
